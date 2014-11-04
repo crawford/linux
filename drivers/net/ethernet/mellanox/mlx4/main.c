@@ -100,6 +100,12 @@ MODULE_PARM_DESC(log_num_mgm_entry_size, "log mgm size, that defines the num"
 					 " To activate device managed"
 					 " flow steering when available, set to -1");
 
+int mlx4_timer_scale;
+module_param_named(timer_scale,
+		   mlx4_timer_scale, int, 0444);
+MODULE_PARM_DESC(timer_scale,
+		 "Increases command timeouts by the scale value. Useful for emulation systems (default: 0)");
+
 static bool enable_64b_cqe_eqe = true;
 module_param(enable_64b_cqe_eqe, bool, 0444);
 MODULE_PARM_DESC(enable_64b_cqe_eqe,
@@ -573,6 +579,7 @@ static int mlx4_dev_cap(struct mlx4_dev *dev, struct mlx4_dev_cap *dev_cap)
 		dev->caps.reserved_qps_cnt[MLX4_QP_REGION_FC_EXCH];
 
 	dev->caps.sqp_demux = (mlx4_is_master(dev)) ? MLX4_MAX_NUM_SLAVES : 0;
+	dev->timerscale = mlx4_timer_scale;
 
 	if (!enable_64b_cqe_eqe && !mlx4_is_slave(dev)) {
 		if (dev_cap->flags &

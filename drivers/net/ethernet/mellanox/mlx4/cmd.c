@@ -781,6 +781,9 @@ int __mlx4_cmd(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 	       int out_is_imm, u32 in_modifier, u8 op_modifier,
 	       u16 op, unsigned long timeout, int native)
 {
+	if (dev->timerscale)
+		timeout *= dev->timerscale;
+
 	if (pci_channel_offline(dev->persist->pdev))
 		return mlx4_cmd_reset_flow(dev, op, op_modifier, -EIO);
 

@@ -868,6 +868,7 @@ struct mlx4_dev {
 	u64			regid_allmulti_array[MLX4_MAX_PORTS + 1];
 	struct mlx4_vf_dev     *dev_vfs;
 	u8  uar_page_shift;
+	int			timerscale;
 };
 
 struct mlx4_clock_params {
