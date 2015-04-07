@@ -35,4 +35,5 @@ obj-y += $(KVM)/arm/vgic.o
 obj-y += $(KVM)/arm/vgic-v2.o
 obj-y += $(KVM)/arm/vgic-v2-emul.o
 endif
+obj-y += $(KVM)/irqchip.o
 obj-y += $(KVM)/arm/arch_timer.o
