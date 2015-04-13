@@ -76,3 +76,11 @@ config QCOM_WCNSS_CTRL
 	help
 	  Client driver for the WCNSS_CTRL SMD channel, used to download nv
 	  firmware to a newly booted WCNSS chip.
+
+config QCOM_IRQ_COMBINER
+	bool "QCOM IRQ combiner support"
+	depends on GPIOLIB && ARCH_QCOM
+	select GPIOLIB_IRQCHIP
+	help
+	  Say yes here to add support for the IRQ combiner devices embedded
+	  in Qualcomm Technologies chips.
