@@ -29,6 +29,7 @@
 #include <linux/sched.h>
 #include <linux/highmem.h>
 #include <linux/perf_event.h>
+#include <linux/hugetlb.h>
 
 #include <asm/cpufeature.h>
 #include <asm/exception.h>
@@ -179,9 +180,10 @@ static void __do_kernel_fault(struct mm_struct *mm, unsigned long addr,
  */
 static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 			    unsigned int esr, unsigned int sig, int code,
-			    struct pt_regs *regs)
+			    struct pt_regs *regs, int fault)
 {
 	struct siginfo si;
+	unsigned lsb = 0;
 
 	if (unhandled_signal(tsk, sig) && show_unhandled_signals_ratelimited()) {
 		pr_info("%s[%d]: unhandled %s (%d) at 0x%08lx, esr 0x%03x\n",
@@ -197,6 +199,17 @@ static void __do_user_fault(struct task_struct *tsk, unsigned long addr,
 	si.si_errno = 0;
 	si.si_code = code;
 	si.si_addr = (void __user *)addr;
+	/*
+	 * Either small page or large page may be poisoned.
+	 * In other words, VM_FAULT_HWPOISON_LARGE and
+	 * VM_FAULT_HWPOISON are mutually exclusive.
+	 */
+	if (fault & VM_FAULT_HWPOISON_LARGE)
+		lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+	else if (fault & VM_FAULT_HWPOISON)
+		lsb = PAGE_SHIFT;
+	si.si_addr_lsb = lsb;
+
 	force_sig_info(sig, &si, tsk);
 }
 
@@ -210,7 +223,7 @@ static void do_bad_area(unsigned long addr, unsigned int esr, struct pt_regs *re
 	 * handle this fault with.
 	 */
 	if (user_mode(regs))
-		__do_user_fault(tsk, addr, esr, SIGSEGV, SEGV_MAPERR, regs);
+		__do_user_fault(tsk, addr, esr, SIGSEGV, SEGV_MAPERR, regs, 0);
 	else
 		__do_kernel_fault(mm, addr, esr, regs);
 }
@@ -397,7 +410,17 @@ retry:
 		 */
 		sig = SIGBUS;
 		code = BUS_ADRERR;
-	} else {
+	}
+#ifdef CONFIG_MEMORY_FAILURE
+	else if (fault & (VM_FAULT_HWPOISON|VM_FAULT_HWPOISON_LARGE)) {
+		pr_err(
+	"Killing %s:%d due to hardware memory corruption fault at %lx\n",
+			tsk->comm, tsk->pid, addr);
+		sig = SIGBUS;
+		code = BUS_MCEERR_AR;
+	}
+#endif
+	else {
 		/*
 		 * Something tried to access memory that isn't in our memory
 		 * map.
@@ -407,7 +430,7 @@ retry:
 			SEGV_ACCERR : SEGV_MAPERR;
 	}
 
-	__do_user_fault(tsk, addr, esr, sig, code, regs);
+	__do_user_fault(tsk, addr, esr, sig, code, regs, fault);
 	return 0;
 
 no_context:
