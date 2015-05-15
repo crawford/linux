@@ -343,4 +343,12 @@ config MTK_IOMMU
 
 	  If unsure, say N here.
 
+config QIOMMU
+	bool "Qualcomm Technologies QIOMMU Support"
+	depends on ARM64
+	select IOMMU_API
+	select IOMMU_IO_PGTABLE_LPAE
+	help
+	  Support for Qualcomm Technologies QIOMMU HW
+
 endif # IOMMU_SUPPORT
