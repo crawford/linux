@@ -141,6 +141,8 @@ static unsigned long ghes_estatus_pool_size_request;
 static struct ghes_estatus_cache *ghes_estatus_caches[GHES_ESTATUS_CACHES_SIZE];
 static atomic_t ghes_estatus_cache_alloced;
 
+static int ghes_panic_timeout __read_mostly = 30;
+
 static int ghes_ioremap_init(void)
 {
 	ghes_ioremap_area = __get_vm_area(PAGE_SIZE * GHES_IOREMAP_PAGES,
@@ -715,6 +717,12 @@ static int ghes_proc(struct ghes *ghes)
 		if (ghes_print_estatus(NULL, ghes->generic, ghes->estatus))
 			ghes_estatus_cache_add(ghes->generic, ghes->estatus);
 	}
+	if (ghes_severity(ghes->estatus->error_severity) >= GHES_SEV_PANIC) {
+		if (panic_timeout == 0)
+			panic_timeout = ghes_panic_timeout;
+		panic("Fatal hardware error!");
+	}
+
 	ghes_do_proc(ghes, ghes->estatus);
 
 	if (ghes->generic_v2) {
@@ -858,8 +866,6 @@ static struct irq_work ghes_proc_irq_work;
 static atomic_t ghes_in_nmi = ATOMIC_INIT(0);
 
 static LIST_HEAD(ghes_nmi);
-
-static int ghes_panic_timeout	__read_mostly = 30;
 
 static void ghes_proc_in_irq(struct irq_work *irq_work)
 {
