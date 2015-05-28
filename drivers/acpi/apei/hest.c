@@ -52,6 +52,7 @@ static const int hest_esrc_len_tab[ACPI_HEST_TYPE_RESERVED] = {
 	[ACPI_HEST_TYPE_AER_ENDPOINT] = sizeof(struct acpi_hest_aer),
 	[ACPI_HEST_TYPE_AER_BRIDGE] = sizeof(struct acpi_hest_aer_bridge),
 	[ACPI_HEST_TYPE_GENERIC_ERROR] = sizeof(struct acpi_hest_generic),
+	[ACPI_HEST_TYPE_GENERIC_ERROR_V2] = sizeof(struct acpi_hest_generic_v2),
 };
 
 static int hest_esrc_len(struct acpi_hest_header *hest_hdr)
@@ -146,7 +147,8 @@ static int __init hest_parse_ghes_count(struct acpi_hest_header *hest_hdr, void 
 {
 	int *count = data;
 
-	if (hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR)
+	if (hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR ||
+	    hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR_V2)
 		(*count)++;
 	return 0;
 }
@@ -157,7 +159,8 @@ static int __init hest_parse_ghes(struct acpi_hest_header *hest_hdr, void *data)
 	struct ghes_arr *ghes_arr = data;
 	int rc, i;
 
-	if (hest_hdr->type != ACPI_HEST_TYPE_GENERIC_ERROR)
+	if (hest_hdr->type != ACPI_HEST_TYPE_GENERIC_ERROR &&
+	    hest_hdr->type != ACPI_HEST_TYPE_GENERIC_ERROR_V2)
 		return 0;
 
 	if (!((struct acpi_hest_generic *)hest_hdr)->enabled)

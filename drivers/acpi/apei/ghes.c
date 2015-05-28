@@ -45,6 +45,7 @@
 #include <linux/aer.h>
 #include <linux/nmi.h>
 
+#include <acpi/actbl1.h>
 #include <acpi/ghes.h>
 #include <acpi/apei.h>
 #include <asm/tlbflush.h>
@@ -244,10 +245,22 @@ static struct ghes *ghes_new(struct acpi_hest_generic *generic)
 	struct ghes *ghes;
 	unsigned int error_block_length;
 	int rc;
+	struct acpi_hest_header *hest_hdr;
 
 	ghes = kzalloc(sizeof(*ghes), GFP_KERNEL);
 	if (!ghes)
 		return ERR_PTR(-ENOMEM);
+
+	hest_hdr = (struct acpi_hest_header *)generic;
+	if (hest_hdr->type == ACPI_HEST_TYPE_GENERIC_ERROR_V2) {
+		ghes->generic_v2 = (struct acpi_hest_generic_v2 *)generic;
+		rc = apei_map_generic_address(
+			&ghes->generic_v2->read_ack_register);
+		if (rc)
+			goto err_unmap;
+	} else
+		ghes->generic_v2 = NULL;
+
 	ghes->generic = generic;
 	rc = apei_map_generic_address(&generic->error_status_address);
 	if (rc)
@@ -270,6 +283,9 @@ static struct ghes *ghes_new(struct acpi_hest_generic *generic)
 
 err_unmap:
 	apei_unmap_generic_address(&generic->error_status_address);
+	if (ghes->generic_v2)
+		apei_unmap_generic_address(
+			&ghes->generic_v2->read_ack_register);
 err_free:
 	kfree(ghes);
 	return ERR_PTR(rc);
@@ -279,6 +295,9 @@ static void ghes_fini(struct ghes *ghes)
 {
 	kfree(ghes->estatus);
 	apei_unmap_generic_address(&ghes->generic->error_status_address);
+	if (ghes->generic_v2)
+		apei_unmap_generic_address(
+			&ghes->generic_v2->read_ack_register);
 }
 
 static inline int ghes_severity(int severity)
@@ -648,6 +667,22 @@ static void ghes_estatus_cache_add(
 	rcu_read_unlock();
 }
 
+static int ghes_do_read_ack(struct acpi_hest_generic_v2 *generic_v2)
+{
+	int rc;
+	u64 val = 0;
+
+	rc = apei_read(&val, &generic_v2->read_ack_register);
+	if (rc)
+		return rc;
+	val &= generic_v2->read_ack_preserve <<
+		generic_v2->read_ack_register.bit_offset;
+	val |= generic_v2->read_ack_write;
+	rc = apei_write(val, &generic_v2->read_ack_register);
+
+	return rc;
+}
+
 static int ghes_proc(struct ghes *ghes)
 {
 	int rc;
@@ -660,6 +695,12 @@ static int ghes_proc(struct ghes *ghes)
 			ghes_estatus_cache_add(ghes->generic, ghes->estatus);
 	}
 	ghes_do_proc(ghes, ghes->estatus);
+
+	if (ghes->generic_v2) {
+		rc = ghes_do_read_ack(ghes->generic_v2);
+		if (rc)
+			return rc;
+	}
 out:
 	ghes_clear_estatus(ghes);
 	return 0;
