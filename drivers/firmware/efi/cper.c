@@ -32,8 +32,13 @@
 #include <linux/acpi.h>
 #include <linux/pci.h>
 #include <linux/aer.h>
+#include <linux/printk.h>
+#include <linux/bcd.h>
 
 #define INDENT_SP	" "
+
+#define acpi_hest_generic_data_version(gdata)		\
+	(gdata->revision >> 8)
 
 static char rcd_decode_str[CPER_REC_LEN];
 
@@ -386,8 +391,15 @@ static void cper_print_pcie(const char *pfx, const struct cper_sec_pcie *pcie,
 	pfx, pcie->bridge.secondary_status, pcie->bridge.control);
 }
 
+static inline void *acpi_hest_generic_data_payload(struct acpi_hest_generic_data *gdata)
+{
+	return acpi_hest_generic_data_version(gdata) >= 3 ?
+		(void *)(((struct acpi_hest_generic_data_v300 *)(gdata)) + 1) :
+		gdata + 1;
+}
+
 static void cper_estatus_print_section(
-	const char *pfx, const struct acpi_hest_generic_data *gdata, int sec_no)
+	const char *pfx, struct acpi_hest_generic_data *gdata, int sec_no)
 {
 	uuid_le *sec_type = (uuid_le *)gdata->section_type;
 	__u16 severity;
@@ -403,14 +415,18 @@ static void cper_estatus_print_section(
 
 	snprintf(newpfx, sizeof(newpfx), "%s%s", pfx, INDENT_SP);
 	if (!uuid_le_cmp(*sec_type, CPER_SEC_PROC_GENERIC)) {
-		struct cper_sec_proc_generic *proc_err = (void *)(gdata + 1);
+		struct cper_sec_proc_generic *proc_err;
+
+		proc_err = acpi_hest_generic_data_payload(gdata);
 		printk("%s""section_type: general processor error\n", newpfx);
 		if (gdata->error_data_length >= sizeof(*proc_err))
 			cper_print_proc_generic(newpfx, proc_err);
 		else
 			goto err_section_too_small;
 	} else if (!uuid_le_cmp(*sec_type, CPER_SEC_PLATFORM_MEM)) {
-		struct cper_sec_mem_err *mem_err = (void *)(gdata + 1);
+		struct cper_sec_mem_err *mem_err;
+
+		mem_err = acpi_hest_generic_data_payload(gdata);
 		printk("%s""section_type: memory error\n", newpfx);
 		if (gdata->error_data_length >=
 		    sizeof(struct cper_sec_mem_err_old))
@@ -419,7 +435,9 @@ static void cper_estatus_print_section(
 		else
 			goto err_section_too_small;
 	} else if (!uuid_le_cmp(*sec_type, CPER_SEC_PCIE)) {
-		struct cper_sec_pcie *pcie = (void *)(gdata + 1);
+		struct cper_sec_pcie *pcie;
+
+		pcie = acpi_hest_generic_data_payload(gdata);
 		printk("%s""section_type: PCIe error\n", newpfx);
 		if (gdata->error_data_length >= sizeof(*pcie))
 			cper_print_pcie(newpfx, pcie, gdata);
@@ -434,10 +452,38 @@ err_section_too_small:
 	pr_err(FW_WARN "error section length is too small\n");
 }
 
+static void cper_estatus_print_section_v300(const char *pfx,
+	const struct acpi_hest_generic_data_v300 *gdata, int sec_no)
+{
+	__u8 hour, min, sec, day, mon, year, century, *timestamp;
+
+	if (gdata->validation_bits & ACPI_HEST_GEN_VALID_TIMESTAMP) {
+		timestamp = (__u8 *)&(gdata->time_stamp);
+		memcpy(&sec, timestamp, 1);
+		memcpy(&min, timestamp + 1, 1);
+		memcpy(&hour, timestamp + 2, 1);
+		memcpy(&day, timestamp + 4, 1);
+		memcpy(&mon, timestamp + 5, 1);
+		memcpy(&year, timestamp + 6, 1);
+		memcpy(&century, timestamp + 7, 1);
+		printk("%stime: ", pfx);
+		printk("%7s", 0x01 & *(timestamp + 3) ? "precise" : "");
+		printk(" %02d:%02d:%02d %02d%02d-%02d-%02d\n",
+			bcd2bin(hour), bcd2bin(min), bcd2bin(sec),
+			bcd2bin(century), bcd2bin(year), bcd2bin(mon),
+			bcd2bin(day));
+	}
+
+	cper_estatus_print_section(pfx,
+				   (struct acpi_hest_generic_data *)gdata,
+				   sec_no);
+}
+
 void cper_estatus_print(const char *pfx,
 			const struct acpi_hest_generic_status *estatus)
 {
 	struct acpi_hest_generic_data *gdata;
+	struct acpi_hest_generic_data_v300 *gdata_v3 = NULL;
 	unsigned int data_len, gedata_len;
 	int sec_no = 0;
 	char newpfx[64];
@@ -451,13 +497,28 @@ void cper_estatus_print(const char *pfx,
 	printk("%s""event severity: %s\n", pfx, cper_severity_str(severity));
 	data_len = estatus->data_length;
 	gdata = (struct acpi_hest_generic_data *)(estatus + 1);
+	if ((gdata->revision >> 8) >= 0x03)
+		gdata_v3 = (struct acpi_hest_generic_data_v300 *)gdata;
+
 	snprintf(newpfx, sizeof(newpfx), "%s%s", pfx, INDENT_SP);
-	while (data_len >= sizeof(*gdata)) {
-		gedata_len = gdata->error_data_length;
-		cper_estatus_print_section(newpfx, gdata, sec_no);
-		data_len -= gedata_len + sizeof(*gdata);
-		gdata = (void *)(gdata + 1) + gedata_len;
-		sec_no++;
+
+	if (gdata_v3) {
+		while (data_len >= sizeof(*gdata_v3)) {
+			gedata_len = gdata_v3->error_data_length;
+			cper_estatus_print_section_v300(newpfx, gdata_v3,
+							sec_no);
+			data_len -= gedata_len + sizeof(*gdata_v3);
+			gdata_v3 = (void *)(gdata_v3 + 1) + gedata_len;
+			sec_no++;
+		}
+	} else {
+		while (data_len >= sizeof(*gdata)) {
+			gedata_len = gdata->error_data_length;
+			cper_estatus_print_section(newpfx, gdata, sec_no);
+			data_len -= gedata_len + sizeof(*gdata);
+			gdata = (void *)(gdata + 1) + gedata_len;
+			sec_no++;
+		}
 	}
 }
 EXPORT_SYMBOL_GPL(cper_estatus_print);
@@ -478,6 +539,7 @@ EXPORT_SYMBOL_GPL(cper_estatus_check_header);
 int cper_estatus_check(const struct acpi_hest_generic_status *estatus)
 {
 	struct acpi_hest_generic_data *gdata;
+	struct acpi_hest_generic_data_v300 *gdata_v3 = NULL;
 	unsigned int data_len, gedata_len;
 	int rc;
 
@@ -486,15 +548,29 @@ int cper_estatus_check(const struct acpi_hest_generic_status *estatus)
 		return rc;
 	data_len = estatus->data_length;
 	gdata = (struct acpi_hest_generic_data *)(estatus + 1);
-	while (data_len >= sizeof(*gdata)) {
-		gedata_len = gdata->error_data_length;
-		if (gedata_len > data_len - sizeof(*gdata))
+
+	if ((gdata->revision >> 8) >= 0x03) {
+		gdata_v3 = (struct acpi_hest_generic_data_v300 *)gdata;
+		while (data_len >= sizeof(*gdata_v3)) {
+			gedata_len = gdata_v3->error_data_length;
+			if (gedata_len > data_len - sizeof(*gdata_v3))
+				return -EINVAL;
+			data_len -= gedata_len + sizeof(*gdata_v3);
+			gdata_v3 = (void *)(gdata_v3 + 1) + gedata_len;
+		}
+		if (data_len)
 			return -EINVAL;
-		data_len -= gedata_len + sizeof(*gdata);
-		gdata = (void *)(gdata + 1) + gedata_len;
+	} else {
+		while (data_len >= sizeof(*gdata)) {
+			gedata_len = gdata->error_data_length;
+			if (gedata_len > data_len - sizeof(*gdata))
+				return -EINVAL;
+			data_len -= gedata_len + sizeof(*gdata);
+			gdata = (void *)(gdata + 1) + gedata_len;
+		}
+		if (data_len)
+			return -EINVAL;
 	}
-	if (data_len)
-		return -EINVAL;
 
 	return 0;
 }
