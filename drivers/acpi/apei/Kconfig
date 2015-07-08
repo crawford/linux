@@ -4,6 +4,21 @@ config HAVE_ACPI_APEI
 config HAVE_ACPI_APEI_NMI
 	bool
 
+config HAVE_ACPI_APEI_SEA
+	bool "APEI Synchronous External Abort logging/recovering support"
+	depends on ARM64
+	help
+	  This option should be enabled if the system supports
+	  firmware first handling of SEA (Synchronous External Abort).
+	  SEA happens with certain faults of data abort or instruction
+	  abort synchronous exceptions on ARMv8 systems. If a system
+	  supports firmware first handling of SEA, the platform analyzes
+	  and handles hardware error notifications with SEA, and it may then
+	  form a HW error record for the OS to parse and handle. This
+	  option allows the OS to look for such HW error record, and
+	  take appropriate action.
+
+
 config ACPI_APEI
 	bool "ACPI Platform Error Interface (APEI)"
 	select MISC_FILESYSTEMS
