@@ -3,6 +3,8 @@
 #
 menuconfig CORESIGHT
 	bool "CoreSight Tracing Support"
+	# The internal driver breaks the upstream driver
+	depends on !CORESIGHT_QCOM
 	select ARM_AMBA
 	select PERF_EVENTS
 	help

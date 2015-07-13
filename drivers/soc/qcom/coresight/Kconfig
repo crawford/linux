@@ -1,0 +1,158 @@
+menuconfig CORESIGHT_QCOM
+	bool "CoreSight Tracing Support"
+	help
+	  CoreSight components are compliant with the ARM CoreSight
+	  architecture specification and can be connected in various
+	  topologies to suite a particular SoCs tracing needs. These trace
+	  components can generally be classified as sources, links and
+	  sinks. Trace data produced by one or more sources flows through
+	  the intermediate links connecting the source to the currently
+	  selected sink.
+
+	  This framework provides an interface for the CoreSight debug and
+	  trace drivers to register themselves with. It's intended to build
+	  up a topological view of the CoreSight components and configure
+	  the right series of components on user input via sysfs. It also
+	  provides status information to user space applications through
+	  sysfs interface.
+
+	  If unsure, say 'N' here to avoid potential power, performance and
+	  memory penalty.
+
+if CORESIGHT_QCOM
+
+config OF_CORESIGHT
+	def_bool y
+	depends on CORESIGHT_QCOM && OF
+
+config CORESIGHT_ACPI
+	def_bool y
+	depends on CORESIGHT_QCOM && ACPI
+
+config CORESIGHT_PROPERTY
+	def_bool y
+	depends on OF_CORESIGHT || CORESIGHT_ACPI
+
+config HAVE_CORESIGHT_QCOM_SINK
+	bool
+
+config CORESIGHT_QCOM_CTI
+	bool "CoreSight Cross Trigger Interface driver"
+	help
+	  This driver provides support for Cross Trigger Interface that is
+	  used to input or output i.e. pass cross trigger events from one
+	  hardware component to another. It can also be used to pass
+	  software generated events.
+
+config CORESIGHT_QCOM_CSR
+	bool "CoreSight Slave Register driver"
+	help
+	  This driver provides support for CoreSight Slave Register block
+	  that hosts miscellaneous configuration registers.
+
+config CORESIGHT_QCOM_SWEVENT
+	bool "QCOM Software event tracing support"
+	depends on ARCH_QCOM && ACPI
+	help
+	  The Software Event driver provides userspace control over STM logging
+	  from firmware devices. Through this interface, trace logging can be turned
+	  on, and specific events can be enabled or disabled using 64 bit masks.
+
+	  The group nodes for both event and entry select which group of 64 bits is
+	  to be used by the mask nodes. Once the group node is set, the mask nodes
+	  can then be used to read and write values that determine which events are
+	  actively logging through STM.
+
+	  Please make sure to check the sw_event_tag node to verify you are using
+	  the correct version of the driver.
+
+config CORESIGHT_QCOM_TMC
+	bool "CoreSight Trace Memory Controller driver"
+	select CORESIGHT_QCOM_CSR
+	select HAVE_CORESIGHT_QCOM_SINK
+	help
+	  This driver provides support for Trace Memory Controller which
+	  can be configured as either an ETB (Embedded Trace Buffer),
+	  ETR (Embedded Trace Router) or ETF (Embedded Trace Fifo). It acts
+	  as sink when configured as ETB, ETR or ETF in circular buffer mode
+	  whereas it is a link when configured as ETF in hardware fifo mode.
+
+	  ETB collects trace data in a circular buffer whereas ETR can be
+	  used to route trace data to memory allocated in RAM. ETF in
+	  circular buffer mode is like an ETB whereas in hardware fifo mode
+	  it is a fifo link.
+
+if HAVE_CORESIGHT_QCOM_SINK
+
+config CORESIGHT_QCOM_FUNNEL
+	bool "CoreSight Funnel driver"
+	help
+	  This driver provides support for Funnel which is a link that
+	  typically has multiple input ports and a single output port. Input
+	  trace data streams from the input ports are interleaved into a
+	  single output trace data stream coming out of the output port.
+
+config CORESIGHT_QCOM_REPLICATOR
+	bool "CoreSight Replicator driver"
+	help
+	  This driver provides support for Replicator that typically has
+	  a single input port and two output ports. Single trace data
+	  stream on the input port is replicated to produce two identical
+	  trace data output streams coming out of the two output ports.
+
+config CORESIGHT_QCOM_TPDA
+	bool "CoreSight Trace, Profiling & Diagnostics Aggregator driver"
+	help
+	  This driver provides support for configuring the Aggregator. This
+	  is primarily useful for pulling the data sets from one or more
+	  attached monitors and pushing the resultant data out. Multiple
+	  monitors are connected on different input ports of TPDA.
+
+config CORESIGHT_QCOM_TPDM
+	bool "CoreSight Trace, Profiling & Diagnostics Monitor driver"
+	help
+	  This driver provides support for configuring the Monitor. Monitors
+	  are primarily responsible for data set collection and support the
+	  ability to collect any permutation of data set types. Monitors are
+	  also responsible for interaction with system cross triggering.
+
+config CORESIGHT_QCOM_TPDM_DEFAULT_ENABLE
+	bool "Turn on TPDM tracing by default"
+	depends on CORESIGHT_QCOM_TPDM
+	help
+	  Turns on CoreSight TPDM tracing for different data set types by
+	  default. Otherwise, tracing is disabled by default but can be
+	  enabled via sysfs.
+
+	  If unsure, say 'N' here to avoid potential power and performance
+	  penalty.
+
+config CORESIGHT_QCOM_STM
+	bool "CoreSight System Trace Macrocell driver"
+	help
+	  This driver provides support for hardware assisted software
+	  instrumentation based tracing. This is primarily useful for
+	  logging useful software events or data.
+
+config CORESIGHT_QCOM_STM_DEFAULT_ENABLE
+	bool "Turn on STM tracing by default"
+	depends on CORESIGHT_QCOM_STM
+	help
+	  Turns on CoreSight STM tracing (hardware assisted software
+	  instrumentation based tracing) by default. Otherwise, tracing is
+	  disabled by default but can be enabled via sysfs.
+
+	  If unsure, say 'N' here to avoid potential power and performance
+	  penalty.
+
+config CORESIGHT_QCOM_HWEVENT
+	bool "CoreSight Hardware Event driver"
+	depends on CORESIGHT_QCOM_STM
+	help
+	  This driver provides support for monitoring and tracing CoreSight
+	  Hardware Event across STM interface. It configures Coresight
+	  Hardware Event mux control registers to select hardware events
+	  based on user input.
+
+endif
+endif
