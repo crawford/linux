@@ -157,11 +157,14 @@ static struct iova *__alloc_iova(struct iova_domain *iovad, size_t size,
 	unsigned long shift = iova_shift(iovad);
 	unsigned long length = iova_align(iovad, size) >> shift;
 
+	/* Respect the upper limit established in iommu_dma_init_domain */
+	dma_limit = min_t(dma_addr_t, dma_limit >> shift, iovad->dma_32bit_pfn);
+
 	/*
 	 * Enforce size-alignment to be safe - there could perhaps be an
 	 * attribute to control this per-device, or at least per-domain...
 	 */
-	return alloc_iova(iovad, length, dma_limit >> shift, true);
+	return alloc_iova(iovad, length, dma_limit, true);
 }
 
 /* The IOVA allocator knows what we mapped, so just unmap whatever that was */
