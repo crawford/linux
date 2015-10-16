@@ -1860,14 +1860,21 @@ _base_request_irq(struct MPT3SAS_ADAPTER *ioc, u8 index, u32 vector)
 	}
 
 	atomic_set(&reply_q->busy, 0);
-	if (ioc->msix_enable)
+	if (ioc->msix_enable) {
 		snprintf(reply_q->name, MPT_NAME_LENGTH, "%s%d-msix%d",
 		    ioc->driver_name, ioc->id, index);
-	else
+
+		r = request_threaded_irq(vector, NULL, _base_interrupt,
+					 IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+					 reply_q->name, reply_q);
+	}
+	else {
 		snprintf(reply_q->name, MPT_NAME_LENGTH, "%s%d",
 		    ioc->driver_name, ioc->id);
-	r = request_irq(vector, _base_interrupt, IRQF_SHARED, reply_q->name,
-	    reply_q);
+
+		r = request_irq(vector, _base_interrupt, IRQF_SHARED,
+				reply_q->name, reply_q);
+	}
 	if (r) {
 		pr_err(MPT3SAS_FMT "unable to allocate interrupt %d!\n",
 		    reply_q->name, vector);
