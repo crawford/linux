@@ -162,6 +162,11 @@ enum {
  * corrective action before the data is consumed
  */
 #define CPER_SEC_LATENT_ERROR			0x0020
+/*
+ * If set, the section contains an error that is propagated. The error
+ * did not originate from the hardware associated with this section.
+ */
+#define CPER_SEC_PROPAGATED			0x0040
 
 /*
  * Section type definitions, used in section_type field in struct
@@ -180,6 +185,10 @@ enum {
 #define CPER_SEC_PROC_IPF						\
 	UUID_LE(0xE429FAF1, 0x3CB7, 0x11D4, 0x0B, 0xCA, 0x07, 0x00,	\
 		0x80, 0xC7, 0x3C, 0x88, 0x81)
+/* Processor Specific: ARMv8 */
+#define CPER_SEC_PROC_ARMV8						\
+	UUID_LE(0xE19E3D16, 0xBC11, 0x11E4, 0x9C, 0xAA, 0xC2, 0x05,	\
+		0x1D, 0x5D, 0x46, 0xB0)
 /* Platform Memory */
 #define CPER_SEC_PLATFORM_MEM						\
 	UUID_LE(0xA5BC1114, 0x6F64, 0x4EDE, 0xB8, 0x63, 0x3E, 0x83,	\
@@ -254,6 +263,34 @@ enum {
 #define CPER_PCIE_VALID_AER_INFO		0x0080
 
 #define CPER_PCIE_SLOT_SHIFT			3
+
+#define CPER_ARMV8_ERR_INFO_NUM_MASK		0x00000000000000FF
+#define CPER_ARMV8_CTX_INFO_NUM_MASK		0x0000000000FFFF00
+#define CPER_ARMV8_CTX_INFO_NUM_SHIFT		8
+
+#define CPER_ARMV8_VALID_MPIDR			0x00000001
+#define CPER_ARMV8_VALID_AFFINITY_LEVEL		0x00000002
+#define CPER_ARMV8_VALID_RUNNING_STATE		0x00000004
+#define CPER_ARMV8_VALID_VENDOR_INFO		0x00000008
+
+#define CPER_ARMV8_INFO_VALID_MULTI_ERR		0x0001
+#define CPER_ARMV8_INFO_VALID_FLAGS		0x0002
+#define CPER_ARMV8_INFO_VALID_ERR_INFO		0x0004
+#define CPER_ARMV8_INFO_VALID_VIRT_ADDR		0x0008
+#define CPER_ARMV8_INFO_VALID_PHYSICAL_ADDR	0x0010
+
+#define CPER_ARMV8_INFO_FLAGS_FIRST		0x0001
+#define CPER_ARMV8_INFO_FLAGS_LAST		0x0002
+#define CPER_ARMV8_INFO_FLAGS_PROPAGATED	0x0004
+
+#define CPER_AARCH64_CTX_LEN			368
+#define CPER_AARCH32_CTX_LEN			256
+
+#define CPER_ARMV8_CTX_TYPE_MASK		0x000000000000000F
+#define CPER_ARMV8_CTX_EL_MASK			0x0000000000000070
+#define CPER_ARMV8_CTX_NS_MASK			0x0000000000000080
+#define CPER_ARMV8_CTX_EL_SHIFT			4
+#define CPER_ARMV8_CTX_NS_SHIFT			7
 
 /*
  * All tables and structs must be byte-packed to match CPER
@@ -338,6 +375,41 @@ struct cper_ia_proc_ctx {
 	__u16	reg_arr_size;
 	__u32	msr_addr;
 	__u64	mm_reg_addr;
+};
+
+/* ARMv8 Processor Error Section */
+struct cper_sec_proc_armv8 {
+	__u32	validation_bits;
+	__u16	err_info_num; /* Number of Processor Error Info */
+	__u16	context_info_num; /* Number of Processor Context Info Records*/
+	__u32	section_length;
+	__u8	affinity_level;
+	__u8	reserved[3];	/* must be zero */
+	__u64	mpidr;
+	__u64	midr;
+	__u32	running_state; /* Bit 0 set - Processor running. PSCI = 0 */
+	__u32	psci_state;
+};
+
+/* ARMv8 Processor Error Information Structure */
+struct cper_armv8_err_info {
+	__u8	version;
+	__u8	length;
+	__u16	validation_bits;
+	__u8	type;
+	__u16	multiple_error;
+	__u8	flags;
+	__u64	error_info;
+	__u64	virt_fault_addr;
+	__u64	physical_fault_addr;
+};
+
+/* ARMv8 AARCH64 Processor Context Information Structure */
+struct cper_armv8_aarch64_ctx {
+	__u8	type_el_ns;
+	__u8	reserved[7];	/* must be zero */
+	__u8	gpr[288];
+	__u8	spr[68];
 };
 
 /* Old Memory Error Section UEFI 2.1, 2.2 */

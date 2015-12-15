@@ -112,12 +112,15 @@ void cper_print_bits(const char *pfx, unsigned int bits,
 static const char * const proc_type_strs[] = {
 	"IA32/X64",
 	"IA64",
+	"ARMv8",
 };
 
 static const char * const proc_isa_strs[] = {
 	"IA32",
 	"IA64",
 	"X64",
+	"ARM A32/T32",
+	"ARM A64",
 };
 
 static const char * const proc_error_type_strs[] = {
@@ -184,6 +187,129 @@ static void cper_print_proc_generic(const char *pfx,
 		       pfx, proc->responder_id);
 	if (proc->validation_bits & CPER_PROC_VALID_IP)
 		printk("%s""IP: 0x%016llx\n", pfx, proc->ip);
+}
+
+static void cper_print_proc_armv8(const char *pfx,
+				  const struct cper_sec_proc_armv8 *proc)
+{
+	int i, len;
+	struct cper_armv8_err_info *err_info;
+	__u64 *qword = NULL;
+	char newpfx[64];
+
+	printk("%ssection length: %d\n", pfx, proc->section_length);
+	printk("%sMIDR: 0x%016llx\n", pfx, proc->midr);
+
+	len = proc->section_length - (sizeof(*proc) +
+		proc->err_info_num * (sizeof(*err_info)));
+	if (len < 0) {
+		printk("%ssection length is too small.\n", pfx);
+		printk("%sERR_INFO_NUM is %d.\n", pfx, proc->err_info_num);
+		return;
+	}
+
+	if (proc->validation_bits & CPER_ARMV8_VALID_MPIDR)
+		printk("%sMPIDR: 0x%016llx\n", pfx, proc->mpidr);
+	if (proc->validation_bits & CPER_ARMV8_VALID_AFFINITY_LEVEL)
+		printk("%serror affinity level: %d\n", pfx,
+			proc->affinity_level);
+	if (proc->validation_bits & CPER_ARMV8_VALID_RUNNING_STATE) {
+		printk("%srunning state: %d\n", pfx, proc->running_state);
+		printk("%sPSCI state: %d\n", pfx, proc->psci_state);
+	}
+
+	snprintf(newpfx, sizeof(newpfx), "%s%s", pfx, INDENT_SP);
+
+	err_info = (struct cper_armv8_err_info *)(proc + 1);
+	for (i = 0; i < proc->err_info_num; i++) {
+		printk("%sError info structure %d:\n", pfx, i);
+		printk("%sversion:%d\n", newpfx, err_info->version);
+		printk("%slength:%d\n", newpfx, err_info->length);
+		if (err_info->validation_bits &
+		    CPER_ARMV8_INFO_VALID_MULTI_ERR) {
+			if (err_info->multiple_error == 0)
+				printk("%ssingle error.\n", newpfx);
+			else if (err_info->multiple_error == 1)
+				printk("%smultiple errors.\n", newpfx);
+			else
+				printk("%smultiple errors count:%d.\n",
+				newpfx, err_info->multiple_error);
+		}
+		if (err_info->validation_bits & CPER_ARMV8_INFO_VALID_FLAGS) {
+			if (err_info->flags & CPER_ARMV8_INFO_FLAGS_FIRST)
+				printk("%sfirst error captured.\n", newpfx);
+			if (err_info->flags & CPER_ARMV8_INFO_FLAGS_LAST)
+				printk("%slast error captured.\n", newpfx);
+			if (err_info->flags & CPER_ARMV8_INFO_FLAGS_PROPAGATED)
+				printk("%spropagated error captured.\n",
+				       newpfx);
+		}
+		printk("%serror_type: %d, %s\n", newpfx, err_info->type,
+			err_info->type < ARRAY_SIZE(proc_error_type_strs) ?
+			proc_error_type_strs[err_info->type] : "unknown");
+		printk("%serror_info: 0x%016llx\n", newpfx,
+		       err_info->error_info);
+		if (err_info->validation_bits & CPER_ARMV8_INFO_VALID_VIRT_ADDR)
+			printk("%svirtual fault address: 0x%016llx\n",
+				newpfx, err_info->virt_fault_addr);
+		if (err_info->validation_bits &
+		    CPER_ARMV8_INFO_VALID_PHYSICAL_ADDR)
+			printk("%sphysical fault address: 0x%016llx\n",
+				newpfx, err_info->physical_fault_addr);
+		err_info += 1;
+	}
+
+	if (len < sizeof(*qword) && proc->context_info_num > 0) {
+		printk("%ssection length is too small.\n", pfx);
+		printk("%sCTX_INFO_NUM is %d.\n", pfx, proc->context_info_num);
+		return;
+	}
+	for (i = 0; i < proc->context_info_num; i++) {
+		qword = (__u64 *)err_info;
+		printk("%sProcessor context info structure %d:\n", pfx, i);
+		printk("%sException level %d.\n", newpfx,
+		       (int)((*qword & CPER_ARMV8_CTX_EL_MASK)
+				>> CPER_ARMV8_CTX_EL_SHIFT));
+		printk("%sSecure bit: %d.\n", newpfx,
+		       (int)((*qword & CPER_ARMV8_CTX_NS_MASK)
+				>> CPER_ARMV8_CTX_NS_SHIFT));
+		if ((*qword & CPER_ARMV8_CTX_TYPE_MASK) == 0) {
+			if (len < CPER_AARCH32_CTX_LEN) {
+				printk("%ssection length is too small.\n", pfx);
+				printk("%sremaining length is %d.\n", pfx, len);
+				return;
+			}
+			printk("%sAArch32 execution context.\n", newpfx);
+			qword++;
+			print_hex_dump(newpfx, "", DUMP_PREFIX_OFFSET, 16, 4,
+				qword, CPER_AARCH32_CTX_LEN - sizeof(*qword),
+				0);
+			len -= CPER_AARCH32_CTX_LEN;
+		} else if ((*qword & CPER_ARMV8_CTX_TYPE_MASK) == 1) {
+			if (len < CPER_AARCH64_CTX_LEN) {
+				printk("%ssection length is too small.\n", pfx);
+				printk("%sremaining length is %d.\n", pfx, len);
+				return;
+			}
+			printk("%sAArch64 execution context.\n", newpfx);
+			qword++;
+			print_hex_dump(newpfx, "", DUMP_PREFIX_OFFSET, 16, 4,
+				qword, CPER_AARCH64_CTX_LEN - sizeof(*qword),
+				0);
+			len -= CPER_AARCH64_CTX_LEN;
+		} else {
+			printk("%scontext type is incorrect 0x%016llx.\n",
+			pfx, *qword);
+			return;
+		}
+	}
+
+	if (len > 0) {
+		printk("%sVendor specific error info has %d bytes.\n", pfx,
+		       len);
+		print_hex_dump(pfx, "", DUMP_PREFIX_OFFSET, 16, 4, qword, len,
+			0);
+	}
 }
 
 static const char * const mem_err_type_strs[] = {
@@ -441,6 +567,15 @@ static void cper_estatus_print_section(
 		printk("%s""section_type: PCIe error\n", newpfx);
 		if (gdata->error_data_length >= sizeof(*pcie))
 			cper_print_pcie(newpfx, pcie, gdata);
+		else
+			goto err_section_too_small;
+	} else if (!uuid_le_cmp(*sec_type, CPER_SEC_PROC_ARMV8)) {
+		struct cper_sec_proc_armv8 *armv8_err;
+
+		armv8_err = acpi_hest_generic_data_payload(gdata);
+		printk("%ssection_type: ARMv8 processor error\n", newpfx);
+		if (gdata->error_data_length >= sizeof(*armv8_err))
+			cper_print_proc_armv8(newpfx, armv8_err);
 		else
 			goto err_section_too_small;
 	} else
