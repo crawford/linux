@@ -64,4 +64,17 @@ extern void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
 
 #endif	/* __ASSEMBLY__ */
 
+/*
+ * The functions below are used to register and unregister callbacks
+ * that are to be invoked when a Synchronous External Abort (SEA)
+ * occurs. An SEA is raised by certain fault status codes that have
+ * either data or instruction abort as the exception class, and
+ * callbacks may be registered to parse or handle such hardware errors.
+ *
+ * Registered callbacks are run in an interrupt/atomic context. They
+ * are not allowed to block or sleep.
+ */
+int sea_register_handler_chain(struct notifier_block *nb);
+void sea_unregister_handler_chain(struct notifier_block *nb);
+
 #endif	/* __ASM_SYSTEM_MISC_H */

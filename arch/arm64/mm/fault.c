@@ -39,6 +39,22 @@
 #include <asm/pgtable.h>
 #include <asm/tlbflush.h>
 
+/*
+ * GHES SEA handler code may register a notifier call here to
+ * handle HW error record passed from platform.
+ */
+static ATOMIC_NOTIFIER_HEAD(sea_handler_chain);
+
+int sea_register_handler_chain(struct notifier_block *nb)
+{
+	return atomic_notifier_chain_register(&sea_handler_chain, nb);
+}
+
+void sea_unregister_handler_chain(struct notifier_block *nb)
+{
+	atomic_notifier_chain_unregister(&sea_handler_chain, nb);
+}
+
 static const char *fault_name(unsigned int esr);
 
 /*
@@ -442,6 +458,28 @@ static int do_bad(unsigned long addr, unsigned int esr, struct pt_regs *regs)
 	return 1;
 }
 
+/*
+ * This abort handler deals with Synchronous External Abort.
+ * It calls notifiers, and then returns "fault".
+ */
+static int do_sea(unsigned long addr, unsigned int esr, struct pt_regs *regs)
+{
+	struct siginfo info;
+
+	atomic_notifier_call_chain(&sea_handler_chain, 0, NULL);
+
+	pr_err("Synchronous External Abort: %s (0x%08x) at 0x%016lx\n",
+		 fault_name(esr), esr, addr);
+
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code  = 0;
+	info.si_addr  = (void __user *)addr;
+	arm64_notify_die("", regs, &info, esr);
+
+	return 0;
+}
+
 static const struct fault_info {
 	int	(*fn)(unsigned long addr, unsigned int esr, struct pt_regs *regs);
 	int	sig;
@@ -464,22 +502,22 @@ static const struct fault_info {
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 1 permission fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 2 permission fault"	},
 	{ do_page_fault,	SIGSEGV, SEGV_ACCERR,	"level 3 permission fault"	},
-	{ do_bad,		SIGBUS,  0,		"synchronous external abort"	},
+	{ do_sea,		SIGBUS,  0,		"synchronous external abort"	},
 	{ do_bad,		SIGBUS,  0,		"unknown 17"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 18"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 19"			},
-	{ do_bad,		SIGBUS,  0,		"synchronous abort (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous abort (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous abort (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous abort (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous parity error"	},
+	{ do_sea,		SIGBUS,  0,		"level 0 SEA (trans tbl walk)"	},
+	{ do_sea,		SIGBUS,  0,		"level 1 SEA (trans tbl walk)"	},
+	{ do_sea,		SIGBUS,  0,		"level 2 SEA (trans tbl walk)"	},
+	{ do_sea,		SIGBUS,  0,		"level 3 SEA (trans tbl walk)"	},
+	{ do_sea,		SIGBUS,  0,		"synchronous parity or ECC err" },
 	{ do_bad,		SIGBUS,  0,		"unknown 25"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 26"			},
 	{ do_bad,		SIGBUS,  0,		"unknown 27"			},
-	{ do_bad,		SIGBUS,  0,		"synchronous parity error (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous parity error (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous parity error (translation table walk)" },
-	{ do_bad,		SIGBUS,  0,		"synchronous parity error (translation table walk)" },
+	{ do_sea,		SIGBUS,  0,		"level 0 synch parity error"	},
+	{ do_sea,		SIGBUS,  0,		"level 1 synch parity error"	},
+	{ do_sea,		SIGBUS,  0,		"level 2 synch parity error"	},
+	{ do_sea,		SIGBUS,  0,		"level 3 synch parity error"	},
 	{ do_bad,		SIGBUS,  0,		"unknown 32"			},
 	{ do_alignment_fault,	SIGBUS,  BUS_ADRALN,	"alignment fault"		},
 	{ do_bad,		SIGBUS,  0,		"unknown 34"			},
