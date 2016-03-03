@@ -12,3 +12,4 @@ obj-$(CONFIG_QCOM_SMP2P)	+= smp2p.o
 obj-$(CONFIG_QCOM_SMSM)	+= smsm.o
 obj-$(CONFIG_QCOM_WCNSS_CTRL) += wcnss_ctrl.o
 obj-$(CONFIG_CORESIGHT_QCOM) += coresight/
+obj-$(CONFIG_QCOM_CRASH_NOTIFIER) += qcom_crash_notifier.o

@@ -115,3 +115,11 @@ config QCOM_IRQ_COMBINER
 	  in Qualcomm Technologies chips.
 
 source "drivers/soc/qcom/coresight/Kconfig"
+
+config QCOM_CRASH_NOTIFIER
+	bool "QCOM Crash Notifier"
+	depends on ARCH_QCOM && ACPI
+	help
+	  QCOM platform specific driver to send notifications when a kernel
+	  panic occurs. IMC is notified of the kernel panic via an interrupt
+	  which is triggered in this driver.
