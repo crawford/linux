@@ -238,6 +238,7 @@ void __init efi_init(void)
 	efi.memmap.map_end = efi.memmap.map + params.mmap_size;
 	efi.memmap.desc_size = params.desc_size;
 	efi.memmap.desc_version = params.desc_ver;
+	efi.memmap.nr_map = params.mmap_size / params.desc_size;
 
 	WARN(efi.memmap.desc_version != 1,
 	     "Unexpected EFI_MEMORY_DESCRIPTOR version %ld",
@@ -247,6 +248,7 @@ void __init efi_init(void)
 		return;
 
 	reserve_regions();
+	efi_esrt_init();
 	efi_memattr_init();
 	early_memunmap(efi.memmap.map, params.mmap_size);
 
