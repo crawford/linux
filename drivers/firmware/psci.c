@@ -13,6 +13,7 @@
 
 #define pr_fmt(fmt) "psci: " fmt
 
+#include <linux/acpi.h>
 #include <linux/arm-smccc.h>
 #include <linux/cpuidle.h>
 #include <linux/errno.h>
@@ -250,11 +251,83 @@ static int __init psci_features(u32 psci_func_id)
 #ifdef CONFIG_CPU_IDLE
 static DEFINE_PER_CPU_READ_MOSTLY(u32 *, psci_power_state);
 
-static int psci_dt_cpu_init_idle(struct device_node *cpu_node, int cpu)
+static int psci_dt_get_state_count(struct device_node *cpu_dn)
 {
-	int i, ret, count = 0;
-	u32 *psci_states;
+	int count = 0;
 	struct device_node *state_node;
+
+	/* Count idle states */
+	while ((state_node = of_parse_phandle(cpu_dn, "cpu-idle-states",
+					      count))) {
+		count++;
+		of_node_put(state_node);
+	}
+
+	return count;
+}
+
+static int psci_dt_get_idle_state(struct device_node *node, int idx, u32 *state)
+{
+	int ret;
+	struct device_node *state_node;
+
+	state_node = of_parse_phandle(node, "cpu-idle-states", idx);
+
+	ret = of_property_read_u32(state_node, "arm,psci-suspend-param",
+				   state);
+	if (ret)
+		pr_warn(" * %s missing arm,psci-suspend-param property\n",
+			state_node->full_name);
+
+	of_node_put(state_node);
+
+	return ret;
+}
+
+#ifdef CONFIG_ACPI
+#include <acpi/processor.h>
+
+static int psci_acpi_get_state_count(unsigned int cpu)
+{
+	struct acpi_processor *pr = per_cpu(processors, cpu);
+
+	if (unlikely(!pr || !pr->flags.has_lpi))
+		return -EINVAL;
+
+	return pr->power.count - 1;
+}
+
+static int psci_acpi_get_idle_state(unsigned int cpu, int idx, u32 *state)
+{
+	struct acpi_processor *pr = per_cpu(processors, cpu);
+	struct acpi_lpi_state *lpi = &pr->power.lpi_states[idx + 1];
+
+	/*
+	 * Only bits[31:0] represent a PSCI power_state while
+	 * bits[63:32] must be 0x0 as per ARM ACPI FFH Specification
+	 */
+	if (!lpi)
+		return -EINVAL;
+
+	*state = lpi->address & 0xFFFFFFFF;
+	return 0;
+}
+#else
+static int psci_acpi_get_state_count(unsigned int cpu)
+{
+	return -EINVAL;
+}
+
+static int psci_acpi_get_idle_state(unsigned int cpu, int idx, u32 *state)
+{
+	return -EINVAL;
+}
+#endif
+
+static int __psci_cpu_init_idle(struct device_node *cpu_dn, int cpu, bool acpi)
+{
+	int i, count, ret;
+	u32 *psci_states;
 
 	/*
 	 * If the PSCI cpu_suspend function hook has not been initialized
@@ -263,14 +336,12 @@ static int psci_dt_cpu_init_idle(struct device_node *cpu_node, int cpu)
 	if (!psci_ops.cpu_suspend)
 		return -EOPNOTSUPP;
 
-	/* Count idle states */
-	while ((state_node = of_parse_phandle(cpu_node, "cpu-idle-states",
-					      count))) {
-		count++;
-		of_node_put(state_node);
-	}
+	if (acpi)
+		count = psci_acpi_get_state_count(cpu);
+	else
+		count = psci_dt_get_state_count(cpu_dn);
 
-	if (!count)
+	if (count <= 0)
 		return -ENODEV;
 
 	psci_states = kcalloc(count, sizeof(*psci_states), GFP_KERNEL);
@@ -278,21 +349,15 @@ static int psci_dt_cpu_init_idle(struct device_node *cpu_node, int cpu)
 		return -ENOMEM;
 
 	for (i = 0; i < count; i++) {
-		u32 state;
+		u32 state = 0;
 
-		state_node = of_parse_phandle(cpu_node, "cpu-idle-states", i);
-
-		ret = of_property_read_u32(state_node,
-					   "arm,psci-suspend-param",
-					   &state);
-		if (ret) {
-			pr_warn(" * %s missing arm,psci-suspend-param property\n",
-				state_node->full_name);
-			of_node_put(state_node);
+		if (acpi)
+			ret = psci_acpi_get_idle_state(cpu, i, &state);
+		else
+			ret = psci_dt_get_idle_state(cpu_dn, i, &state);
+		if (ret)
 			goto free_mem;
-		}
 
-		of_node_put(state_node);
 		pr_debug("psci-power-state %#x index %d\n", state, i);
 		if (!psci_power_state_is_valid(state)) {
 			pr_warn("Invalid PSCI power state %#x\n", state);
@@ -310,10 +375,23 @@ free_mem:
 	return ret;
 }
 
+static int psci_dt_cpu_init_idle(struct device_node *cpu_node, int cpu)
+{
+	return __psci_cpu_init_idle(cpu_node, cpu, false);
+}
+
+static int psci_acpi_cpu_init_idle(unsigned int cpu)
+{
+	return __psci_cpu_init_idle(NULL, cpu, true);
+}
+
 int psci_cpu_init_idle(unsigned int cpu)
 {
 	struct device_node *cpu_node;
 	int ret;
+
+	if (!acpi_disabled)
+		return psci_acpi_cpu_init_idle(cpu);
 
 	cpu_node = of_get_cpu_node(cpu, NULL);
 	if (!cpu_node)

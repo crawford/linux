@@ -11,9 +11,9 @@
 
 #define pr_fmt(fmt) "CPUidle arm: " fmt
 
+#include <linux/arm-cpuidle.h>
 #include <linux/cpuidle.h>
 #include <linux/cpumask.h>
-#include <linux/cpu_pm.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -36,26 +36,7 @@
 static int arm_enter_idle_state(struct cpuidle_device *dev,
 				struct cpuidle_driver *drv, int idx)
 {
-	int ret;
-
-	if (!idx) {
-		cpu_do_idle();
-		return idx;
-	}
-
-	ret = cpu_pm_enter();
-	if (!ret) {
-		/*
-		 * Pass idle state index to cpu_suspend which in turn will
-		 * call the CPU ops suspend protocol with idle index as a
-		 * parameter.
-		 */
-		ret = arm_cpuidle_suspend(idx);
-
-		cpu_pm_exit();
-	}
-
-	return ret ? -1 : idx;
+	return arm_generic_enter_idle_state(idx);
 }
 
 static struct cpuidle_driver arm_idle_driver = {
