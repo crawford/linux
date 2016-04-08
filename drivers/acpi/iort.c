@@ -19,16 +19,88 @@
 #define pr_fmt(fmt)	"ACPI: IORT: " fmt
 
 #include <linux/export.h>
+#include <linux/iommu.h>
 #include <linux/iort.h>
 #include <linux/irqdomain.h>
 #include <linux/kernel.h>
+#include <linux/list.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 struct iort_its_msi_chip {
 	struct list_head	list;
 	struct fwnode_handle	*fw_node;
 	u32			translation_id;
 };
+
+struct iort_ops_node {
+	struct list_head list;
+	struct acpi_iort_node *node;
+	const struct iommu_ops *ops;
+	int (*iommu_xlate)(struct device *dev, u32 streamid,
+			   struct acpi_iort_node *node);
+};
+static LIST_HEAD(iort_iommu_ops);
+static DEFINE_SPINLOCK(iort_ops_lock);
+
+/**
+ * iort_smmu_set_ops - Create iort_ops_node and use it to register
+ *		       iommu data in the iort_iommu_ops list.
+ *
+ * @node: IORT table node associated with the IOMMU
+ * @ops: IOMMU operations associated with the IORT node
+ * @iommu_xlate: iommu translate function to be used to carry out stream id
+ *		 translation
+ *
+ * Returns: 0 on success
+ *          -ENOMEM on failure
+ */
+int iort_smmu_set_ops(struct acpi_iort_node *node,
+		       const struct iommu_ops *ops,
+		       int (*iommu_xlate)(struct device *dev, u32 streamid,
+					  struct acpi_iort_node *node))
+{
+	struct iort_ops_node *iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
+
+	if (WARN_ON(!iommu))
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&iommu->list);
+	iommu->node = node;
+	iommu->ops = ops;
+	iommu->iommu_xlate = iommu_xlate;
+
+	spin_lock(&iort_ops_lock);
+	list_add_tail(&iommu->list, &iort_iommu_ops);
+	spin_unlock(&iort_ops_lock);
+
+	return 0;
+}
+
+/**
+ * iort_smmu_get_ops_node - Retrieve iort_ops_node associated with an
+ *			    IORT node.
+ *
+ * @node: IORT table node to be looked-up
+ *
+ * Returns: iort_ops_node pointer on success
+ *          NULL on failure
+*/
+const struct iort_ops_node *iort_smmu_get_ops_node(struct acpi_iort_node *node)
+{
+	struct iort_ops_node *curr, *iommu_node = NULL;
+
+	spin_lock(&iort_ops_lock);
+	list_for_each_entry(curr, &iort_iommu_ops, list) {
+		if (curr->node == node) {
+			iommu_node = curr;
+			break;
+		}
+	}
+	spin_unlock(&iort_ops_lock);
+
+	return iommu_node;
+}
 
 typedef acpi_status (*iort_find_node_callback)
 	(struct acpi_iort_node *node, void *context);

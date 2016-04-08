@@ -34,5 +34,10 @@ static inline u32 iort_msi_map_rid(struct device *dev, u32 req_id)
 static inline struct irq_domain *
 iort_get_device_domain(struct device *dev, u32 req_id) { return NULL; }
 #endif
+int iort_smmu_set_ops(struct acpi_iort_node *node,
+		      const struct iommu_ops *ops,
+		      int (*iommu_xlate)(struct device *dev,
+					 u32 streamid,
+					 struct acpi_iort_node *node));
 
 #endif /* __IORT_H__ */
