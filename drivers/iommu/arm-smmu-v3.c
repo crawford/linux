@@ -30,6 +30,7 @@
 #include <linux/msi.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_iommu.h>
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
@@ -669,6 +670,12 @@ struct arm_smmu_domain {
 	};
 
 	struct iommu_domain		domain;
+};
+
+/* SMMU private data for each master */
+struct arm_smmu_master_data {
+	struct arm_smmu_device		*smmu;
+	u32				sid;
 };
 
 struct arm_smmu_option_prop {
@@ -1813,40 +1820,19 @@ arm_smmu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 	return ret;
 }
 
-static int __arm_smmu_get_pci_sid(struct pci_dev *pdev, u16 alias, void *sidp)
-{
-	*(u32 *)sidp = alias;
-	return 0; /* Continue walking */
-}
-
 static void __arm_smmu_release_pci_iommudata(void *data)
 {
 	kfree(data);
 }
 
-static struct arm_smmu_device *arm_smmu_get_for_pci_dev(struct pci_dev *pdev)
+static struct arm_smmu_device *arm_smmu_get_by_node(struct device_node *np)
 {
-	struct device_node *of_node;
-	struct platform_device *smmu_pdev;
-	struct arm_smmu_device *smmu = NULL;
-	struct pci_bus *bus = pdev->bus;
+	struct platform_device *smmu_pdev = of_find_device_by_node(np);
 
-	/* Walk up to the root bus */
-	while (!pci_is_root_bus(bus))
-		bus = bus->parent;
-
-	/* Follow the "iommus" phandle from the host controller */
-	of_node = of_parse_phandle(bus->bridge->parent->of_node, "iommus", 0);
-	if (!of_node)
+	if (!smmu_pdev)
 		return NULL;
 
-	/* See if we can find an SMMU corresponding to the phandle */
-	smmu_pdev = of_find_device_by_node(of_node);
-	if (smmu_pdev)
-		smmu = platform_get_drvdata(smmu_pdev);
-
-	of_node_put(of_node);
-	return smmu;
+	return platform_get_drvdata(smmu_pdev);
 }
 
 static bool arm_smmu_sid_in_range(struct arm_smmu_device *smmu, u32 sid)
@@ -1863,23 +1849,41 @@ static int arm_smmu_add_device(struct device *dev)
 {
 	int i, ret;
 	u32 sid, *sids;
-	struct pci_dev *pdev;
 	struct iommu_group *group;
+	struct device_node *np;
 	struct arm_smmu_group *smmu_group;
-	struct arm_smmu_device *smmu;
+	struct arm_smmu_device *smmu = NULL;
+	struct arm_smmu_master_data *data = dev->archdata.iommu;
 
-	/* We only support PCI, for now */
-	if (!dev_is_pci(dev))
+	if (!data)
 		return -ENODEV;
 
-	pdev = to_pci_dev(dev);
+	np = (struct device_node *)data->smmu;
+	smmu = data->smmu = arm_smmu_get_by_node(np);
+	of_node_put(np);
+	if (!smmu)
+		return -ENODEV;
+
+	sid = data->sid;
+
+	/* Check the SID is in range of the SMMU and our stream table */
+	if (!arm_smmu_sid_in_range(smmu, sid))
+		return -ERANGE;
+
+	/* Ensure l2 strtab is initialised */
+	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB) {
+		ret = arm_smmu_init_l2_strtab(smmu, sid);
+		if (ret)
+			return ret;
+	}
+
 	group = iommu_group_get_for_dev(dev);
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
 	smmu_group = iommu_group_get_iommudata(group);
 	if (!smmu_group) {
-		smmu = arm_smmu_get_for_pci_dev(pdev);
+		smmu = arm_smmu_get_by_node(np);
 		if (!smmu) {
 			ret = -ENOENT;
 			goto out_remove_dev;
@@ -1900,25 +1904,10 @@ static int arm_smmu_add_device(struct device *dev)
 		smmu = smmu_group->smmu;
 	}
 
-	/* Assume SID == RID until firmware tells us otherwise */
-	pci_for_each_dma_alias(pdev, __arm_smmu_get_pci_sid, &sid);
 	for (i = 0; i < smmu_group->num_sids; ++i) {
 		/* If we already know about this SID, then we're done */
 		if (smmu_group->sids[i] == sid)
 			goto out_put_group;
-	}
-
-	/* Check the SID is in range of the SMMU and our stream table */
-	if (!arm_smmu_sid_in_range(smmu, sid)) {
-		ret = -ERANGE;
-		goto out_remove_dev;
-	}
-
-	/* Ensure l2 strtab is initialised */
-	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB) {
-		ret = arm_smmu_init_l2_strtab(smmu, sid);
-		if (ret)
-			goto out_remove_dev;
 	}
 
 	/* Resize the SID array for the group */
@@ -1947,6 +1936,7 @@ out_remove_dev:
 
 static void arm_smmu_remove_device(struct device *dev)
 {
+	kfree(dev->archdata.iommu);
 	iommu_group_remove_device(dev);
 }
 
@@ -1994,6 +1984,34 @@ out_unlock:
 	return ret;
 }
 
+static int arm_smmu_of_xlate(struct device *dev, struct of_phandle_args *args)
+{
+	struct arm_smmu_master_data *data;
+
+	/* We only support PCI, for now */
+	if (!dev_is_pci(dev))
+		return -ENODEV;
+
+	if (dev->archdata.iommu)
+		return -EEXIST;
+
+	data = kmalloc(sizeof(*data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	/*
+	 * The device_node stands in for the SMMU device at this point
+	 * since there's no guarantee the SMMU itself has probed yet.
+	 * By the time we see this again in an add_device callback, we'll
+	 * be in a position to fix it up with the real thing.
+	 */
+	data->smmu = (struct arm_smmu_device *)args->np;
+	data->sid = args->args[0];
+	dev->archdata.iommu = data;
+
+	return 0;
+}
+
 static struct iommu_ops arm_smmu_ops = {
 	.capable		= arm_smmu_capable,
 	.domain_alloc		= arm_smmu_domain_alloc,
@@ -2008,6 +2026,7 @@ static struct iommu_ops arm_smmu_ops = {
 	.device_group		= pci_device_group,
 	.domain_get_attr	= arm_smmu_domain_get_attr,
 	.domain_set_attr	= arm_smmu_domain_set_attr,
+	.of_xlate		= arm_smmu_of_xlate,
 	.pgsize_bitmap		= -1UL, /* Restricted during device attach */
 };
 
@@ -2776,6 +2795,14 @@ static void __exit arm_smmu_exit(void)
 
 subsys_initcall(arm_smmu_init);
 module_exit(arm_smmu_exit);
+
+static int __init arm_smmu_of_init(struct device_node *np)
+{
+	of_iommu_set_ops(np, &arm_smmu_ops);
+
+	return 0;
+}
+IOMMU_OF_DECLARE(arm_smmuv3, "arm,smmu-v3", arm_smmu_of_init);
 
 MODULE_DESCRIPTION("IOMMU API for ARM architected SMMUv3 implementations");
 MODULE_AUTHOR("Will Deacon <will.deacon@arm.com>");
