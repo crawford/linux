@@ -1980,7 +1980,8 @@ event_sched_in(struct perf_event *event,
 	perf_log_itrace_start(event);
 
 	if (event->pmu->add(event, PERF_EF_START)) {
-		event->state = PERF_EVENT_STATE_INACTIVE;
+		if (event->state == PERF_EVENT_STATE_ACTIVE)
+			event->state = PERF_EVENT_STATE_INACTIVE;
 		event->oncpu = -1;
 		ret = -EAGAIN;
 		goto out;
