@@ -36,6 +36,7 @@ struct arm_pmu_platdata {
  * The ARMv7 CPU PMU supports up to 32 event counters.
  */
 #define ARMPMU_MAX_HWEVENTS		32
+#define ARMPMU_MAX_CPUEVENTS		33
 
 #define HW_OP_UNSUPPORTED		0xFFFF
 #define C(_x)				PERF_COUNT_HW_CACHE_##_x
@@ -62,7 +63,7 @@ struct pmu_hw_events {
 	 * A 1 bit for an index indicates that the counter is being used for
 	 * an event. A 0 means that the counter can be used.
 	 */
-	DECLARE_BITMAP(used_mask, ARMPMU_MAX_HWEVENTS);
+	DECLARE_BITMAP(used_mask, ARMPMU_MAX_CPUEVENTS);
 
 	/*
 	 * Hardware lock to serialize accesses to PMU registers. Needed for the
