@@ -52,3 +52,31 @@ This property is set (currently only on PowerPC, and only needed on
 book3e) by some versions of kexec-tools to tell the new kernel that it
 is being booted by kexec, as the booting environment may differ (e.g.
 a different secondary CPU release mechanism)
+
+linux,usable-memory
+-------------------
+
+This property is set on PowerPC and arm64 by kexec-tools during kdump
+to tell the crash kernel the base address of its reserved area of memory, and
+the size. e.g.
+
+/ {
+	chosen {
+		linux,usable-memory = <0x9 0xf0000000 0x0 0x10000000>;
+	};
+};
+
+linux,elfcorehdr
+----------------
+
+This property is set (currently only on arm64) by kexec-tools during kdump
+to tell the crash kernel the address and size of the elfcorehdr that describes
+the old kernel's memory as an elf file. This memory must reside within the area
+described by 'linux,usable-memory'. e.g.
+
+/ {
+	chosen {
+		linux,usable-memory = <0x9 0xf0000000 0x0 0x10000000>;
+		linux,elfcorehdr = <0x9 0xfffff000 0x0 0x800>;
+	};
+};
