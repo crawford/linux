@@ -222,4 +222,7 @@ void pcibios_remove_bus(struct pci_bus *bus)
 	acpi_pci_remove_bus(bus);
 }
 
+DECLARE_ACPI_MCFG_FIXUP(&pci_32b_ecam_ops, "QCOM", "QDF2432", 1,
+			PCI_MCFG_DOMAIN_ANY, PCI_MCFG_BUS_ANY);
+
 #endif

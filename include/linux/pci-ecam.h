@@ -59,6 +59,9 @@ void __iomem *pci_ecam_map_bus(struct pci_bus *bus, unsigned int devfn,
 /* default ECAM ops */
 extern struct pci_ecam_ops pci_generic_ecam_ops;
 
+/* ECAM ops with 32 bit config space access quirk */
+extern struct pci_ecam_ops pci_32b_ecam_ops;
+
 #ifdef CONFIG_PCI_HOST_GENERIC
 /* for DT-based PCI controllers that support ECAM */
 int pci_host_common_probe(struct platform_device *pdev,
