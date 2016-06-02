@@ -28,6 +28,7 @@ Required properties:
 	"qcom,scorpion-mp-pmu"
 	"qcom,krait-pmu"
 	"qcom,qcom-l2cache-pmu"
+	"qcom,qcom-pmuv3"
 - interrupts : 1 combined interrupt or 1 per core. If the interrupt is a per-cpu
                interrupt (PPI) then 1 interrupt should be specified.
 
