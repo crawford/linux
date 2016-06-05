@@ -31,6 +31,7 @@ u32 iort_msi_map_rid(struct device *dev, u32 req_id);
 struct irq_domain *iort_get_device_domain(struct device *dev, u32 req_id);
 
 /* IOMMU interface */
+struct platform_device *iort_find_iommu_device(struct acpi_iort_node *node);
 const struct iommu_ops *iort_iommu_configure(struct device *dev);
 #else
 static inline bool iort_node_match(u8 type) { return false; }
@@ -40,6 +41,8 @@ static inline struct irq_domain *
 iort_get_device_domain(struct device *dev, u32 req_id) { return NULL; }
 
 /* IOMMU interface */
+static inline struct platform_device *
+iort_find_iommu_device(struct acpi_iort_node *node) { return NULL; }
 static inline const struct iommu_ops *
 iort_iommu_configure(struct device *dev) { return NULL; }
 #endif

@@ -34,6 +34,42 @@ struct iort_its_msi_chip {
 	u32			translation_id;
 };
 
+static int iort_dev_match(struct device *dev, void *data)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	const char *name = data;
+
+	return !strcmp(pdev->name, name);
+}
+
+/**
+ * iort_find_iommu_device- Retrieve IOMMU platform_device associated with
+ *			   IORT node
+ *
+ * @node: IORT table node associated with the device
+ *
+ * Returns: device on success
+ *          NULL on failure
+ */
+struct platform_device *iort_find_iommu_device(struct acpi_iort_node *node)
+{
+	struct acpi_iort_node *curr;
+	struct device *dev = NULL;
+	const struct iort_iommu_config *cfg = iort_get_iommu_config(node);
+
+	if (!cfg)
+		return NULL;
+
+	while ((dev = bus_find_device(&platform_bus_type, dev,
+				      (void *)cfg->name, iort_dev_match))) {
+		curr = *(struct acpi_iort_node **) dev_get_platdata(dev);
+		if (curr == node)
+			return to_platform_device(dev);
+	}
+
+	return NULL;
+}
+
 struct iort_ops_node {
 	struct list_head list;
 	struct acpi_iort_node *node;
