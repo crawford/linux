@@ -29,12 +29,19 @@ struct fwnode_handle *iort_find_domain_token(int trans_id);
 bool iort_node_match(u8 type);
 u32 iort_msi_map_rid(struct device *dev, u32 req_id);
 struct irq_domain *iort_get_device_domain(struct device *dev, u32 req_id);
+
+/* IOMMU interface */
+const struct iommu_ops *iort_iommu_configure(struct device *dev);
 #else
 static inline bool iort_node_match(u8 type) { return false; }
 static inline u32 iort_msi_map_rid(struct device *dev, u32 req_id)
 { return req_id; }
 static inline struct irq_domain *
 iort_get_device_domain(struct device *dev, u32 req_id) { return NULL; }
+
+/* IOMMU interface */
+static inline const struct iommu_ops *
+iort_iommu_configure(struct device *dev) { return NULL; }
 #endif
 int iort_smmu_set_ops(struct acpi_iort_node *node,
 		      const struct iommu_ops *ops,

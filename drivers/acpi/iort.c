@@ -214,6 +214,29 @@ iort_scan_node(enum acpi_iort_node_type type,
 	return NULL;
 }
 
+static struct acpi_iort_node *
+iort_find_parent_node(struct acpi_iort_node *node)
+{
+	struct acpi_iort_id_mapping *id;
+
+	if (!node || !node->mapping_offset || !node->mapping_count)
+		return NULL;
+
+	id = ACPI_ADD_PTR(struct acpi_iort_id_mapping, node,
+			  node->mapping_offset);
+
+	if (!id->output_reference) {
+		pr_err(FW_BUG "[node %p type %d] ID map has NULL parent reference\n",
+		       node, node->type);
+		return NULL;
+	}
+
+	node = ACPI_ADD_PTR(struct acpi_iort_node, iort_table,
+			    id->output_reference);
+
+	return node;
+}
+
 static acpi_status
 iort_match_callback(struct acpi_iort_node *node, void *context)
 {
@@ -453,6 +476,60 @@ iort_get_device_domain(struct device *dev, u32 req_id)
 		return NULL;
 
 	return irq_find_matching_fwnode(handle, DOMAIN_BUS_PCI_MSI);
+}
+
+static int __get_pci_rid(struct pci_dev *pdev, u16 alias, void *data)
+{
+	u32 *rid = data;
+
+	*rid = alias;
+	return 0;
+}
+
+/**
+ * iort_iommu_configure - Set-up IOMMU configuration for a device.
+ *
+ * @dev: device to configure
+ *
+ * Returns: iommu_ops pointer on configuration success
+ *          NULL on configuration failure
+ */
+const struct iommu_ops *iort_iommu_configure(struct device *dev)
+{
+	struct acpi_iort_node *node, *parent;
+	const struct iort_ops_node *iort_ops;
+	u32 rid = 0, devid = 0;
+
+	if (dev_is_pci(dev)) {
+		struct pci_bus *bus = to_pci_dev(dev)->bus;
+
+		pci_for_each_dma_alias(to_pci_dev(dev), __get_pci_rid,
+				       &rid);
+
+		node = iort_scan_node(ACPI_IORT_NODE_PCI_ROOT_COMPLEX,
+				      iort_match_node_callback, &bus->dev);
+	} else {
+		node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
+				      iort_match_node_callback, dev);
+	}
+
+	if (!node)
+		return NULL;
+
+	parent = iort_find_parent_node(node);
+
+	if (!parent)
+		return NULL;
+
+	iort_ops = iort_smmu_get_ops_node(parent);
+
+	if (iort_ops && iort_ops->iommu_xlate) {
+		iort_node_map_rid(node, rid, &devid, parent->type);
+		iort_ops->iommu_xlate(dev, devid, parent);
+		return iort_ops->ops;
+	}
+
+	return NULL;
 }
 
 static int __init
