@@ -25,6 +25,7 @@
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/pci.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 
 struct iort_its_msi_chip {
@@ -454,6 +455,128 @@ iort_get_device_domain(struct device *dev, u32 req_id)
 	return irq_find_matching_fwnode(handle, DOMAIN_BUS_PCI_MSI);
 }
 
+static int __init
+add_smmu_platform_device(const struct iort_iommu_config *iort_cfg,
+			 struct acpi_iort_node *node)
+{
+	struct platform_device *pdev;
+	struct resource *r;
+	enum dev_dma_attr attr;
+	int ret, count;
+
+	pdev = platform_device_alloc(iort_cfg->name, PLATFORM_DEVID_AUTO);
+	if (!pdev)
+		return PTR_ERR(pdev);
+
+	count = iort_cfg->iommu_count_resources(node);
+
+	r = kcalloc(count, sizeof(*r), GFP_KERNEL);
+	if (!r) {
+		ret = -ENOMEM;
+		goto dev_put;
+	}
+
+	iort_cfg->iommu_init_resources(r, node);
+
+	ret = platform_device_add_resources(pdev, r, count);
+	/*
+	 * Resources are duplicated in platform_device_add_resources,
+	 * free their allocated memory
+	 */
+	kfree(r);
+
+	if (ret)
+		goto dev_put;
+
+	/*
+	 * Add a copy of IORT node pointer to platform_data to
+	 * be used to retrieve IORT data information.
+	 */
+	ret = platform_device_add_data(pdev, &node, sizeof(node));
+	if (ret)
+		goto dev_put;
+
+	pdev->dev.dma_mask = kmalloc(sizeof(*pdev->dev.dma_mask), GFP_KERNEL);
+	if (!pdev->dev.dma_mask) {
+		ret = -ENOMEM;
+		goto dev_put;
+	}
+
+	/*
+	 * Set default dma mask value for the table walker,
+	 * to be overridden on probing with correct value.
+	 */
+	*pdev->dev.dma_mask = DMA_BIT_MASK(32);
+	pdev->dev.coherent_dma_mask = *pdev->dev.dma_mask;
+
+	attr = iort_cfg->iommu_is_coherent(node) ?
+			     DEV_DMA_COHERENT : DEV_DMA_NON_COHERENT;
+
+	/* Configure DMA for the page table walker */
+	arch_setup_dma_ops(&pdev->dev, 0, 0, NULL,
+					 attr == DEV_DMA_COHERENT);
+
+	ret = platform_device_add(pdev);
+	if (ret)
+		goto dma_deconfigure;
+
+	ret = iort_cfg->iommu_init(node);
+	if (ret)
+		goto dma_deconfigure;
+
+	return 0;
+
+dma_deconfigure:
+	arch_teardown_dma_ops(&pdev->dev);
+	kfree(pdev->dev.dma_mask);
+
+dev_put:
+	platform_device_put(pdev);
+
+	return ret;
+}
+
+static int __init iort_smmu_init(void)
+{
+	struct acpi_iort_node *iort_node, *iort_end;
+	struct acpi_table_iort *iort;
+	int i, ret;
+
+	/*
+	 * iort_table and iort both point to the start of IORT table, but
+	 * have different struct types
+	 */
+	iort = (struct acpi_table_iort *)iort_table;
+
+	/* Get the first IORT node */
+	iort_node = ACPI_ADD_PTR(struct acpi_iort_node, iort,
+				 iort->node_offset);
+	iort_end = ACPI_ADD_PTR(struct acpi_iort_node, iort_table,
+				iort_table->length);
+
+	for (i = 0; i < iort->node_count; i++) {
+		const struct iort_iommu_config *ops;
+
+		if (iort_node >= iort_end) {
+			pr_err("iort node pointer overflows, bad table\n");
+			return -EINVAL;
+		}
+
+		ops = iort_get_iommu_config(iort_node);
+		if (!ops)
+			goto next;
+
+		ret = add_smmu_platform_device(ops, iort_node);
+		if (ret)
+			return ret;
+next:
+		iort_node = ACPI_ADD_PTR(struct acpi_iort_node, iort_node,
+					 iort_node->length);
+	}
+
+	return 0;
+}
+
 static int __init iort_table_detect(void)
 {
 	acpi_status status;
@@ -467,6 +590,8 @@ static int __init iort_table_detect(void)
 		pr_err("Failed to get table, %s\n", msg);
 		return -EINVAL;
 	}
+
+	iort_smmu_init();
 
 	return 0;
 }

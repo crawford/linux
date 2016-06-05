@@ -42,4 +42,19 @@ int iort_smmu_set_ops(struct acpi_iort_node *node,
 					 u32 streamid,
 					 struct acpi_iort_node *node));
 
+struct iort_iommu_config {
+	const char *name;
+	int (*iommu_init)(struct acpi_iort_node *node);
+	bool (*iommu_is_coherent)(struct acpi_iort_node *node);
+	int (*iommu_count_resources)(struct acpi_iort_node *node);
+	void (*iommu_init_resources)(struct resource *res,
+				     struct acpi_iort_node *node);
+};
+
+static inline const struct iort_iommu_config *
+iort_get_iommu_config(struct acpi_iort_node *node)
+{
+	return NULL;
+}
+
 #endif /* __IORT_H__ */
