@@ -2769,6 +2769,107 @@ static int __init arm_smmu_of_init(struct device_node *np)
 }
 IOMMU_OF_DECLARE(arm_smmuv3, "arm,smmu-v3", arm_smmu_of_init);
 
+#ifdef CONFIG_ACPI
+static int acpi_smmu_init(struct acpi_iort_node *node)
+{
+	iort_smmu_set_ops(node, &arm_smmu_ops, NULL);
+
+	return 0;
+}
+
+static void acpi_smmu_register_irq(int hwirq, const char *name,
+				   struct resource *res)
+{
+	int irq = acpi_register_gsi(NULL, hwirq, ACPI_EDGE_SENSITIVE,
+				    ACPI_ACTIVE_HIGH);
+
+	if (irq < 0) {
+		pr_err("could not register gsi hwirq %d name [%s]\n", hwirq,
+								      name);
+		return;
+	}
+
+	res->start = irq;
+	res->end = irq;
+	res->flags = IORESOURCE_IRQ;
+	res->name = name;
+}
+
+static int arm_smmu_count_resources(struct acpi_iort_node *node)
+{
+	struct acpi_iort_smmu_v3 *smmu;
+	/* Always present mem resource */
+	int num_res = 1;
+
+	/* Retrieve SMMUv3 specific data */
+	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
+
+	if (smmu->event_gsiv)
+		num_res++;
+
+	if (smmu->pri_gsiv)
+		num_res++;
+
+	if (smmu->gerr_gsiv)
+		num_res++;
+
+	if (smmu->sync_gsiv)
+		num_res++;
+
+	return num_res;
+}
+
+static void arm_smmu_init_resources(struct resource *res,
+				    struct acpi_iort_node *node)
+{
+	struct acpi_iort_smmu_v3 *smmu;
+	int num_res = 0;
+
+	/* Retrieve SMMUv3 specific data */
+	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
+
+	res[num_res].start = smmu->base_address;
+	res[num_res].end = smmu->base_address + SZ_128K - 1;
+	res[num_res].flags = IORESOURCE_MEM;
+
+	num_res++;
+
+	if (smmu->event_gsiv)
+		acpi_smmu_register_irq(smmu->event_gsiv, "eventq",
+				       &res[num_res++]);
+
+	if (smmu->pri_gsiv)
+		acpi_smmu_register_irq(smmu->pri_gsiv, "priq",
+				       &res[num_res++]);
+
+	if (smmu->gerr_gsiv)
+		acpi_smmu_register_irq(smmu->gerr_gsiv, "gerror",
+				       &res[num_res++]);
+
+	if (smmu->sync_gsiv)
+		acpi_smmu_register_irq(smmu->sync_gsiv, "cmdq-sync",
+				       &res[num_res++]);
+}
+
+static bool arm_smmu_is_coherent(struct acpi_iort_node *node)
+{
+	struct acpi_iort_smmu_v3 *smmu;
+
+	/* Retrieve SMMUv3 specific data */
+	smmu = (struct acpi_iort_smmu_v3 *)node->node_data;
+
+	return smmu->flags & ACPI_IORT_SMMU_V3_COHACC_OVERRIDE;
+}
+
+const struct iort_iommu_config iort_arm_smmu_v3_cfg = {
+	.name = "arm-smmu-v3",
+	.iommu_init = acpi_smmu_init,
+	.iommu_is_coherent = arm_smmu_is_coherent,
+	.iommu_count_resources = arm_smmu_count_resources,
+	.iommu_init_resources = arm_smmu_init_resources
+};
+#endif
+
 MODULE_DESCRIPTION("IOMMU API for ARM architected SMMUv3 implementations");
 MODULE_AUTHOR("Will Deacon <will.deacon@arm.com>");
 MODULE_LICENSE("GPL v2");

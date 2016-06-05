@@ -64,7 +64,17 @@ struct iort_iommu_config {
 static inline const struct iort_iommu_config *
 iort_get_iommu_config(struct acpi_iort_node *node)
 {
-	return NULL;
+	switch (node->type) {
+#if IS_ENABLED(CONFIG_ARM_SMMU_V3)
+	case ACPI_IORT_NODE_SMMU_V3: {
+		extern const struct iort_iommu_config iort_arm_smmu_v3_cfg;
+
+		return &iort_arm_smmu_v3_cfg;
+	}
+#endif
+	default:
+		return NULL;
+	}
 }
 
 #endif /* __IORT_H__ */
