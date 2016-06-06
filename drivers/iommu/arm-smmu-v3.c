@@ -2725,11 +2725,16 @@ static int __init arm_smmu_init(void)
 	struct device_node *np;
 	int ret;
 
-	np = of_find_matching_node(NULL, arm_smmu_of_match);
-	if (!np)
-		return 0;
+	if (acpi_disabled) {
+		np = of_find_matching_node(NULL, arm_smmu_of_match);
+		if (!np)
+			return 0;
 
-	of_node_put(np);
+		of_node_put(np);
+	} else {
+		if (!iort_node_match(ACPI_IORT_NODE_SMMU_V3))
+			return 0;
+	}
 
 	ret = platform_driver_register(&arm_smmu_driver);
 	if (ret)
