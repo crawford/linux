@@ -34,6 +34,7 @@
 #include <linux/aer.h>
 #include <linux/printk.h>
 #include <linux/bcd.h>
+#include <ras/ras_event.h>
 
 #define INDENT_SP	" "
 
@@ -256,6 +257,14 @@ static void cper_print_proc_armv8(const char *pfx,
 		    CPER_ARMV8_INFO_VALID_PHYSICAL_ADDR)
 			printk("%sphysical fault address: 0x%016llx\n",
 				newpfx, err_info->physical_fault_addr);
+		trace_arm_event(proc->affinity_level, proc->mpidr, proc->midr,
+				proc->running_state, proc->psci_state,
+				err_info->version, err_info->type,
+				err_info->multiple_error,
+				err_info->validation_bits,
+				err_info->error_info,
+				err_info->virt_fault_addr,
+				err_info->physical_fault_addr);
 		err_info += 1;
 	}
 

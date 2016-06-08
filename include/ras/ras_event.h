@@ -162,6 +162,73 @@ TRACE_EVENT(mc_event,
 );
 
 /*
+ * ARM Processor Events Report
+ *
+ * This event is generated when hardware detects an ARM processor error
+ * has occurred. UEFI 2.6 spec section N.2.4.4.
+ */
+TRACE_EVENT(arm_event,
+
+	TP_PROTO(const u8 affinity,
+		 const u64 mpidr,
+		 const u64 midr,
+		 const u32 running_state,
+		 const u32 psci_state,
+		 const u8 version,
+		 const u8 type,
+		 const u16 err_count,
+		 const u8 flags,
+		 const u64 info,
+		 const u64 virt_fault_addr,
+		 const u64 phys_fault_addr),
+
+	TP_ARGS(affinity, mpidr, midr, running_state, psci_state,
+		version, type, err_count, flags, info, virt_fault_addr,
+		phys_fault_addr),
+
+	TP_STRUCT__entry(
+		__field(u8, affinity)
+		__field(u64, mpidr)
+		__field(u64, midr)
+		__field(u32, running_state)
+		__field(u32, psci_state)
+		__field(u8, version)
+		__field(u8, type)
+		__field(u16, err_count)
+		__field(u8, flags)
+		__field(u64, info)
+		__field(u64, virt_fault_addr)
+		__field(u64, phys_fault_addr)
+	),
+
+	TP_fast_assign(
+		__entry->affinity = affinity;
+		__entry->mpidr = mpidr;
+		__entry->midr = midr;
+		__entry->running_state = running_state;
+		__entry->psci_state = psci_state;
+		__entry->version = version;
+		__entry->type = type;
+		__entry->err_count = err_count;
+		__entry->flags = flags;
+		__entry->info = info;
+		__entry->virt_fault_addr = virt_fault_addr;
+		__entry->phys_fault_addr = phys_fault_addr;
+	),
+
+	TP_printk("affinity level: %d; MPIDR: %016llx; MIDR: %016llx; "
+		  "running state: %d; PSCI state: %d; version: %d; type: %d; "
+		  "error count: 0x%04x; flags: 0x%02x; info: %016llx; "
+		  "virtual fault address: %016llx; "
+		  "physical fault address: %016llx",
+		  __entry->affinity, __entry->mpidr, __entry->midr,
+		  __entry->running_state, __entry->psci_state, __entry->version,
+		  __entry->type, __entry->err_count, __entry->flags,
+		  __entry->info, __entry->virt_fault_addr,
+		  __entry->phys_fault_addr)
+);
+
+/*
  * Unknown Section Report
  *
  * This event is generated when hardware detected a hardware
