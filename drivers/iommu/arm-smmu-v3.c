@@ -28,6 +28,7 @@
 #include <linux/iommu.h>
 #include <linux/iopoll.h>
 #include <linux/iort.h>
+#include <linux/iova.h>
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/of.h>
@@ -462,6 +463,9 @@ static phys_addr_t arm_smmu_msi_cfg[ARM_SMMU_MAX_MSIS][3] = {
 	},
 };
 
+/* The address at which the SMMU sends MSIs */
+phys_addr_t arm_smmu_msi_target_phys;
+
 struct arm_smmu_cmdq_ent {
 	/* Common fields */
 	u8				opcode;
@@ -665,6 +669,8 @@ struct arm_smmu_domain {
 	};
 
 	struct iommu_domain		domain;
+
+	phys_addr_t			msi_addr_mapped;
 };
 
 enum arm_smmu_fw_type {
@@ -1477,6 +1483,61 @@ static struct iommu_gather_ops arm_smmu_gather_ops = {
 };
 
 /* IOMMU API */
+static int arm_smmu_map_msi_target(struct arm_smmu_domain *smmu_domain)
+{
+	phys_addr_t addr = arm_smmu_msi_target_phys;
+	const struct iommu_ops *ops = smmu_domain->domain.ops;
+	u64 granule = (1ULL << __ffs(smmu_domain->domain.pgsize_bitmap));
+	int ret;
+
+	if (!addr || smmu_domain->msi_addr_mapped)
+		return 0;
+
+	/* 1-to-1 map the page containing msi_target_phys */
+	addr &= ~(granule - 1);
+	ret = ops->map(&smmu_domain->domain, addr, addr, granule,
+		       IOMMU_READ | IOMMU_WRITE);
+	if (ret)
+		return ret;
+
+	/* Reserve the iova to prevent it from being allocated and remapped */
+	if (smmu_domain->domain.type == IOMMU_DOMAIN_DMA) {
+		struct iova_domain *iovad = smmu_domain->domain.iova_cookie;
+		unsigned long pfn = iova_pfn(iovad, addr);
+
+		reserve_iova(iovad, pfn, pfn);
+	}
+
+	smmu_domain->msi_addr_mapped = addr;
+
+	return ret;
+}
+
+static int arm_smmu_unmap_msi_target(struct arm_smmu_domain *smmu_domain)
+{
+	phys_addr_t addr = smmu_domain->msi_addr_mapped;
+	const struct iommu_ops *ops = smmu_domain->domain.ops;
+	u64 granule = (1ULL << __ffs(ops->pgsize_bitmap));
+	int ret;
+
+	if (!addr)
+		return 0;
+
+	ret = ops->unmap(&smmu_domain->domain, addr, granule);
+
+	/* Release the iova reservation */
+	if (smmu_domain->domain.type == IOMMU_DOMAIN_DMA) {
+		struct iova_domain *iovad = smmu_domain->domain.iova_cookie;
+		unsigned long pfn = iova_pfn(iovad, addr);
+
+		free_iova(iovad, pfn);
+	}
+
+	smmu_domain->msi_addr_mapped = 0;
+
+	return (ret == granule) ? 0 : -EINVAL;
+}
+
 static bool arm_smmu_capable(enum iommu_cap cap)
 {
 	switch (cap) {
@@ -1540,6 +1601,8 @@ static void arm_smmu_domain_free(struct iommu_domain *domain)
 {
 	struct arm_smmu_domain *smmu_domain = to_smmu_domain(domain);
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
+
+	arm_smmu_unmap_msi_target(smmu_domain);
 
 	iommu_put_dma_cookie(domain);
 	free_io_pgtable_ops(smmu_domain->pgtbl_ops);
@@ -1744,6 +1807,9 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	master->ste.bypass = false;
 	master->ste.valid = true;
+
+	/* Keep it simple and just map the MSI target in all domains */
+	arm_smmu_map_msi_target(smmu_domain);
 
 	arm_smmu_install_ste(master, smmu_domain);
 
@@ -2762,6 +2828,35 @@ static struct platform_driver arm_smmu_driver = {
 	.remove	= arm_smmu_device_remove,
 };
 
+#ifdef CONFIG_ACPI
+static int __init get_gits_translater_phys(struct acpi_subtable_header *header,
+					   const unsigned long end)
+{
+	struct acpi_madt_generic_translator *its =
+		(struct acpi_madt_generic_translator *)header;
+
+	if (!BAD_MADT_ENTRY(its, end) && its->base_address)
+		arm_smmu_msi_target_phys = its->base_address + 0x10040;
+
+	return 0;
+}
+
+static int __init arm_smmu_init_msi_target_phys(void)
+{
+	if (acpi_disabled)
+		return 0;
+
+	acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_TRANSLATOR,
+			      get_gits_translater_phys, 0);
+	return 0;
+}
+#else
+static int __init arm_smmu_init_msi_target_phys(void)
+{
+	return 0;
+}
+#endif
+
 static int __init arm_smmu_init(void)
 {
 	struct device_node *np;
@@ -2781,6 +2876,8 @@ static int __init arm_smmu_init(void)
 	ret = platform_driver_register(&arm_smmu_driver);
 	if (ret)
 		return ret;
+
+	arm_smmu_init_msi_target_phys();
 
 #ifdef CONFIG_PCI
 	ret = bus_set_iommu(&pci_bus_type, &arm_smmu_ops);
