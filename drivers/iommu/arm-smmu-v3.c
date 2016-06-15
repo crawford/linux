@@ -123,6 +123,20 @@
 #define CR2_RECINVSID			(1 << 1)
 #define CR2_E2H				(1 << 0)
 
+#define ARM_SMMU_GBPA			0x44
+#define GBPA_MEMATTR_SHIFT		0
+#define GBPA_MEMATTR_MASK		0xF
+#define GBPA_MTCFG_SHIFT		4
+#define GBPA_MTCFG_MASK			0x1
+#define GBPA_ALLOCCFG_SHIFT		8
+#define GBPA_ALLOCCFG_MASK		0xF
+#define GBPA_SHCFG_SHIFT		12
+#define GBPA_SHCFG_MASK			0x3
+#define GBPA_PRIVCFG_SHIFT		16
+#define GBPA_PRIVCFG_MASK		0x3
+#define GBPA_INSTCFG_SHIFT		18
+#define GBPA_INSTCFG_MASK		0x3
+
 #define ARM_SMMU_IRQ_CTRL		0x50
 #define IRQ_CTRL_EVTQ_IRQEN		(1 << 2)
 #define IRQ_CTRL_PRIQ_IRQEN		(1 << 1)
@@ -257,8 +271,15 @@
 #define STRTAB_STE_1_STRW_EL2		2UL
 #define STRTAB_STE_1_STRW_SHIFT		30
 
+#define STRTAB_STE_1_MEMATTR_SHIFT	32
+#define STRTAB_STE_1_MTCFG_SHIFT	36
+#define STRTAB_STE_1_ALLOCCFG_SHIFT	37
+
 #define STRTAB_STE_1_SHCFG_INCOMING	1UL
 #define STRTAB_STE_1_SHCFG_SHIFT	44
+
+#define STRTAB_STE_1_PRIVCFG_SHIFT	48
+#define STRTAB_STE_1_INSTCFG_SHIFT	50
 
 #define STRTAB_STE_2_S2VMID_SHIFT	0
 #define STRTAB_STE_2_S2VMID_MASK	0xffffUL
@@ -541,10 +562,20 @@ struct arm_smmu_s2_cfg {
 	u64				vtcr;
 };
 
+struct arm_smmu_bypass_attrs {
+	u8				memattr;
+	u8				mtcfg;
+	u8				alloccfg;
+	u8				shcfg;
+	u8				privcfg;
+	u8				instcfg;
+};
+
 struct arm_smmu_strtab_ent {
 	bool				valid;
 
 	bool				bypass;	/* Overrides s1/s2 config */
+	struct arm_smmu_bypass_attrs	*bypass_attrs;
 	struct arm_smmu_s1_cfg		*s1_cfg;
 	struct arm_smmu_s2_cfg		*s2_cfg;
 };
@@ -604,6 +635,8 @@ struct arm_smmu_device {
 	unsigned int			sid_bits;
 
 	struct arm_smmu_strtab_cfg	strtab_cfg;
+
+	struct arm_smmu_bypass_attrs	bypass_attrs;
 };
 
 /* SMMU private data for an IOMMU group */
@@ -1048,11 +1081,21 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 		val &= ~STRTAB_STE_0_V;
 
 	if (ste->bypass) {
+		struct arm_smmu_bypass_attrs *bpa;
+
 		val |= disable_bypass ? STRTAB_STE_0_CFG_ABORT
 				      : STRTAB_STE_0_CFG_BYPASS;
 		dst[0] = cpu_to_le64(val);
-		dst[1] = cpu_to_le64(STRTAB_STE_1_SHCFG_INCOMING
-			 << STRTAB_STE_1_SHCFG_SHIFT);
+
+		bpa = smmu ? &smmu->bypass_attrs : ste->bypass_attrs;
+		val = (u64)bpa->memattr  << STRTAB_STE_1_MEMATTR_SHIFT  |
+		      (u64)bpa->mtcfg    << STRTAB_STE_1_MTCFG_SHIFT    |
+		      (u64)bpa->alloccfg << STRTAB_STE_1_ALLOCCFG_SHIFT |
+		      (u64)bpa->shcfg    << STRTAB_STE_1_SHCFG_SHIFT    |
+		      (u64)bpa->privcfg  << STRTAB_STE_1_PRIVCFG_SHIFT  |
+		      (u64)bpa->instcfg  << STRTAB_STE_1_INSTCFG_SHIFT;
+		dst[1] = cpu_to_le64(val);
+
 		dst[2] = 0; /* Nuke the VMID */
 		if (ste_live)
 			arm_smmu_sync_ste_for_sid(smmu, sid);
@@ -1121,12 +1164,14 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 		arm_smmu_cmdq_issue_cmd(smmu, &prefetch_cmd);
 }
 
-static void arm_smmu_init_bypass_stes(u64 *strtab, unsigned int nent)
+static void arm_smmu_init_bypass_stes(u64 *strtab, unsigned int nent,
+				      struct arm_smmu_bypass_attrs *bpa)
 {
 	unsigned int i;
 	struct arm_smmu_strtab_ent ste = {
 		.valid	= true,
 		.bypass	= true,
+		.bypass_attrs = bpa,
 	};
 
 	for (i = 0; i < nent; ++i) {
@@ -1158,7 +1203,8 @@ static int arm_smmu_init_l2_strtab(struct arm_smmu_device *smmu, u32 sid)
 		return -ENOMEM;
 	}
 
-	arm_smmu_init_bypass_stes(desc->l2ptr, 1 << STRTAB_SPLIT);
+	arm_smmu_init_bypass_stes(desc->l2ptr, 1 << STRTAB_SPLIT,
+				  &smmu->bypass_attrs);
 	arm_smmu_write_strtab_l1_desc(strtab, desc);
 	return 0;
 }
@@ -1845,6 +1891,7 @@ static int arm_smmu_add_device(struct device *dev)
 			goto out_remove_dev;
 		}
 
+		smmu_group->ste.bypass_attrs = &smmu->bypass_attrs;
 		smmu_group->ste.valid	= true;
 		smmu_group->smmu	= smmu;
 		iommu_group_set_iommudata(group, smmu_group,
@@ -2104,7 +2151,8 @@ static int arm_smmu_init_strtab_linear(struct arm_smmu_device *smmu)
 		<< STRTAB_BASE_CFG_LOG2SIZE_SHIFT;
 	cfg->strtab_base_cfg = reg;
 
-	arm_smmu_init_bypass_stes(strtab, cfg->num_l1_ents);
+	arm_smmu_init_bypass_stes(strtab, cfg->num_l1_ents,
+				  &smmu->bypass_attrs);
 	return 0;
 }
 
@@ -2112,6 +2160,16 @@ static int arm_smmu_init_strtab(struct arm_smmu_device *smmu)
 {
 	u64 reg;
 	int ret;
+	struct arm_smmu_bypass_attrs *bpa = &smmu->bypass_attrs;
+
+	/* SMMU_GBPA provides attributes to use for bypass streams */
+	reg = readl_relaxed(smmu->base + ARM_SMMU_GBPA);
+	bpa->memattr  = (reg >> GBPA_MEMATTR_SHIFT) & GBPA_MEMATTR_MASK;
+	bpa->mtcfg    = (reg >> GBPA_MTCFG_SHIFT) & GBPA_MTCFG_MASK;
+	bpa->alloccfg = (reg >> GBPA_ALLOCCFG_SHIFT) & GBPA_ALLOCCFG_MASK;
+	bpa->shcfg    = (reg >> GBPA_SHCFG_SHIFT) & GBPA_SHCFG_MASK;
+	bpa->privcfg  = (reg >> GBPA_PRIVCFG_SHIFT) & GBPA_PRIVCFG_MASK;
+	bpa->instcfg  = (reg >> GBPA_INSTCFG_SHIFT) & GBPA_INSTCFG_MASK;
 
 	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB)
 		ret = arm_smmu_init_strtab_2lvl(smmu);
