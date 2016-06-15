@@ -22,6 +22,10 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/pci-acpi.h>
+#include <linux/pci-ecam.h>
+
+/* Root pointer to the mapped MCFG table */
+static struct acpi_table_mcfg *mcfg_table;
 
 /* Structure to hold entries from the MCFG table */
 struct mcfg_entry {
@@ -34,6 +38,46 @@ struct mcfg_entry {
 
 /* List to save MCFG entries */
 static LIST_HEAD(pci_mcfg_list);
+
+static bool pci_mcfg_fixup_match(struct pci_cfg_fixup *f,
+				 struct acpi_table_header *h)
+{
+	int olen = min_t(u8, strlen(f->oem_id), ACPI_OEM_ID_SIZE);
+	int tlen = min_t(u8, strlen(f->oem_table_id), ACPI_OEM_TABLE_ID_SIZE);
+
+	return (!strncmp(f->oem_id, h->oem_id, olen) &&
+		!strncmp(f->oem_table_id, h->oem_table_id, tlen) &&
+		f->oem_revision == h->oem_revision);
+}
+
+struct pci_ecam_ops *pci_mcfg_get_ops(struct acpi_pci_root *root)
+{
+	int bus_num = root->secondary.start;
+	int domain = root->segment;
+	struct pci_cfg_fixup *f;
+
+	if (!mcfg_table)
+		return &pci_generic_ecam_ops;
+
+	/*
+	 * Match against platform specific quirks and return corresponding CAM
+	 * ops.
+	 *
+	 * First match against PCI topology <domain:bus> then use OEM ID, OEM
+	 * table ID, and OEM revision from MCFG table standard header.
+	 */
+	for (f = __start_acpi_mcfg_fixups; f < __end_acpi_mcfg_fixups; f++) {
+		if ((f->domain == domain || f->domain == PCI_MCFG_DOMAIN_ANY) &&
+		    (f->bus_num == bus_num || f->bus_num == PCI_MCFG_BUS_ANY) &&
+		    pci_mcfg_fixup_match(f, &mcfg_table->header)) {
+			pr_info("Handling %s %s r%d PCI MCFG quirks\n",
+				f->oem_id, f->oem_table_id, f->oem_revision);
+			return f->ops;
+		}
+	}
+	/* No quirks, use ECAM */
+	return &pci_generic_ecam_ops;
+}
 
 phys_addr_t pci_mcfg_lookup(u16 seg, struct resource *bus_res)
 {
@@ -54,7 +98,6 @@ phys_addr_t pci_mcfg_lookup(u16 seg, struct resource *bus_res)
 
 static __init int pci_mcfg_parse(struct acpi_table_header *header)
 {
-	struct acpi_table_mcfg *mcfg;
 	struct acpi_mcfg_allocation *mptr;
 	struct mcfg_entry *e, *arr;
 	int i, n;
@@ -64,8 +107,8 @@ static __init int pci_mcfg_parse(struct acpi_table_header *header)
 
 	n = (header->length - sizeof(struct acpi_table_mcfg)) /
 					sizeof(struct acpi_mcfg_allocation);
-	mcfg = (struct acpi_table_mcfg *)header;
-	mptr = (struct acpi_mcfg_allocation *) &mcfg[1];
+	mcfg_table = (struct acpi_table_mcfg *)header;
+	mptr = (struct acpi_mcfg_allocation *) &mcfg_table[1];
 
 	arr = kcalloc(n, sizeof(*arr), GFP_KERNEL);
 	if (!arr)
