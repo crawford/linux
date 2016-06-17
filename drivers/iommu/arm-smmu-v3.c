@@ -740,6 +740,60 @@ static struct arm_smmu_option_prop arm_smmu_options[] = {
 #define mmu_err_ratelimited(smmu, fmt, args...) \
 	dev_level_ratelimited(mmu_err, smmu, fmt, ##args)
 
+/*
+ * The trace_groups option is used to display the "lifecycle" of smmu
+ * connected devices.
+ */
+static bool trace_groups;
+module_param_named(trace_groups, trace_groups, bool, S_IRUGO);
+MODULE_PARM_DESC(trace_groups,
+		 "Trace the lifecycle of SMMU connected devices");
+
+static int arm_smmu_group_trace_fn(struct notifier_block *nb,
+				   unsigned long action, void *_dev)
+{
+	struct device *dev = _dev;
+	struct arm_smmu_master_data *data;
+	struct arm_smmu_device *smmu;
+
+	if (WARN_ON(!dev))
+		return NOTIFY_DONE;
+
+	data = dev->archdata.iommu;
+	if (WARN_ON(!data))
+		return NOTIFY_DONE;
+
+	smmu = data->smmu;
+	if (WARN_ON(!smmu))
+		return NOTIFY_DONE;
+
+	if (action == IOMMU_GROUP_NOTIFY_ADD_DEVICE) {
+		mmu_info(smmu, "%s: [ADD_DEVICE]\n", dev_name(dev));
+	} else if (action == IOMMU_GROUP_NOTIFY_DEL_DEVICE) {
+		mmu_info(smmu, "%s: [DEL_DEVICE]\n", dev_name(dev));
+	} else if (action == IOMMU_GROUP_NOTIFY_BIND_DRIVER) {
+		mmu_info(smmu, "%s: [BIND_DRIVER]\n", dev_name(dev));
+	} else if (action == IOMMU_GROUP_NOTIFY_BOUND_DRIVER) {
+		mmu_info(smmu, "%s: [BOUND_DRIVER] : %s\n", dev_name(dev),
+			dev->driver->name);
+	} else if (action == IOMMU_GROUP_NOTIFY_UNBIND_DRIVER) {
+		mmu_info(smmu, "%s: [UNBIND_DRIVER] : %s\n", dev_name(dev),
+			dev->driver->name);
+	} else if (action == IOMMU_GROUP_NOTIFY_UNBOUND_DRIVER) {
+		mmu_info(smmu, "%s: [UNBOUND_DRIVER]\n", dev_name(dev));
+	} else {
+		mmu_info(smmu, "%s: [UNKNOWN_ACTION] : %ld\n", dev_name(dev),
+			action);
+		return NOTIFY_DONE;
+	}
+
+	return NOTIFY_OK;
+}
+
+struct notifier_block arm_smmu_group_trace_notifier = {
+	.notifier_call = arm_smmu_group_trace_fn
+};
+
 static struct arm_smmu_domain *to_smmu_domain(struct iommu_domain *dom)
 {
 	return container_of(dom, struct arm_smmu_domain, domain);
@@ -1986,6 +2040,14 @@ static struct iommu_group *arm_smmu_device_group(struct device *dev)
 
 	/* Create a unique group for each master */
 	group = generic_device_group(dev);
+
+	/*
+	 * If the group has a default_domain, the trace_notifier has likely
+	 * already been registered there.
+	 */
+	if (trace_groups && group && !iommu_group_default_domain(group))
+		iommu_group_register_notifier(group,
+					      &arm_smmu_group_trace_notifier);
 
 	return group;
 }
