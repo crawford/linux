@@ -426,6 +426,7 @@
 
 /* High-level queue structures */
 #define ARM_SMMU_POLL_TIMEOUT_US	100
+#define ARM_SMMU_MAX_CMDQ_TIMEOUT_US	1000000
 
 static bool disable_bypass;
 module_param_named(disable_bypass, disable_bypass, bool, S_IRUGO);
@@ -529,6 +530,8 @@ struct arm_smmu_queue {
 
 	u32 __iomem			*prod_reg;
 	u32 __iomem			*cons_reg;
+
+	u32				poll_timeout_us;
 };
 
 struct arm_smmu_cmdq {
@@ -812,7 +815,7 @@ static bool __queue_cons_before(struct arm_smmu_queue *q, u32 until)
 
 static int queue_poll_cons(struct arm_smmu_queue *q, u32 until, bool wfe)
 {
-	ktime_t timeout = ktime_add_us(ktime_get(), ARM_SMMU_POLL_TIMEOUT_US);
+	ktime_t timeout = ktime_add_us(ktime_get(), q->poll_timeout_us);
 
 	while (queue_sync_cons(q), __queue_cons_before(q, until)) {
 		if (ktime_compare(ktime_get(), timeout) > 0)
@@ -1007,8 +1010,18 @@ static void arm_smmu_cmdq_issue_cmd(struct arm_smmu_device *smmu,
 			mmu_err_ratelimited(smmu, "CMDQ timeout\n");
 	}
 
-	if (ent->opcode == CMDQ_OP_CMD_SYNC && queue_poll_cons(q, until, wfe))
-		mmu_err_ratelimited(smmu, "CMD_SYNC timeout\n");
+	if (ent->opcode == CMDQ_OP_CMD_SYNC && queue_poll_cons(q, until, wfe)) {
+
+		/* Relax the timeout */
+		if (q->poll_timeout_us >= ARM_SMMU_MAX_CMDQ_TIMEOUT_US) {
+			mmu_err_ratelimited(smmu, "CMD_SYNC timeout [%u us] - [MAX]\n",
+					    q->poll_timeout_us);
+		} else {
+			mmu_info(smmu, "CMD_SYNC timed out [%u us] - relaxing to [%u us]\n",
+				 q->poll_timeout_us, 10 * q->poll_timeout_us);
+			q->poll_timeout_us *= 10;
+		}
+	}
 	spin_unlock(&smmu->cmdq.lock);
 }
 
@@ -2098,6 +2111,9 @@ static int arm_smmu_init_one_queue(struct arm_smmu_device *smmu,
 		     << Q_BASE_LOG2SIZE_SHIFT;
 
 	q->prod = q->cons = 0;
+
+	q->poll_timeout_us = ARM_SMMU_POLL_TIMEOUT_US;
+
 	return 0;
 }
 
