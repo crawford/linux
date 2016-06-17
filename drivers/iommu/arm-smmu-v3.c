@@ -646,6 +646,8 @@ struct arm_smmu_device {
 	struct arm_smmu_strtab_cfg	strtab_cfg;
 
 	struct arm_smmu_bypass_attrs	bypass_attrs;
+
+	const char			*log_name;
 };
 
 /* SMMU private data for an IOMMU domain */
@@ -707,6 +709,34 @@ static struct arm_smmu_option_prop arm_smmu_options[] = {
 	{ 0, NULL},
 };
 
+/*
+ * The following macros are equivalent to the dev_{err, info, etc..} macros
+ * except they use the smmu's log name instead of the often difficult
+ * to understand name produced by dev_name. This greatly aids debug on systems
+ * with many smmus.
+ */
+#define mmu_dev_printk_emit(lvl, smmu, fmt, args...) \
+({ \
+	struct arm_smmu_device *_smmu = (smmu); \
+	struct device *_dev = _smmu->dev; \
+	dev_printk_emit((lvl), _dev, "%s %s: " fmt, dev_driver_string(_dev), \
+			_smmu->log_name, ##args); \
+})
+
+#define mmu_err(smmu, fmt, args...) \
+	mmu_dev_printk_emit(LOGLEVEL_ERR, (smmu), fmt, ##args)
+#define mmu_warn(smmu, fmt, args...) \
+	mmu_dev_printk_emit(LOGLEVEL_WARNING, (smmu), fmt, ##args)
+#define mmu_info(smmu, fmt, args...) \
+	mmu_dev_printk_emit(LOGLEVEL_INFO, (smmu), fmt, ##args)
+#define mmu_dbg(smmu, fmt, args...) \
+	mmu_dev_printk_emit(LOGLEVEL_DEBUG, (smmu), fmt, ##args)
+#define mmu_notice(smmu, fmt, args...) \
+	mmu_dev_printk_emit(LOGLEVEL_NOTICE, (smmu), fmt, ##args)
+
+#define mmu_err_ratelimited(smmu, fmt, args...) \
+	dev_level_ratelimited(mmu_err, smmu, fmt, ##args)
+
 static struct arm_smmu_domain *to_smmu_domain(struct iommu_domain *dom)
 {
 	return container_of(dom, struct arm_smmu_domain, domain);
@@ -720,7 +750,7 @@ static void parse_driver_options(struct arm_smmu_device *smmu)
 		if (of_property_read_bool(smmu->dev->of_node,
 						arm_smmu_options[i].prop)) {
 			smmu->options |= arm_smmu_options[i].opt;
-			dev_notice(smmu->dev, "option %s\n",
+			mmu_notice(smmu, "option %s\n",
 				arm_smmu_options[i].prop);
 		}
 	} while (arm_smmu_options[++i].opt);
@@ -920,12 +950,12 @@ static void arm_smmu_cmdq_skip_err(struct arm_smmu_device *smmu)
 		.opcode = CMDQ_OP_CMD_SYNC,
 	};
 
-	dev_err(smmu->dev, "CMDQ error (cons 0x%08x): %s\n", cons,
+	mmu_err(smmu, "CMDQ error (cons 0x%08x): %s\n", cons,
 		idx < ARRAY_SIZE(cerror_str) ?  cerror_str[idx] : "Unknown");
 
 	switch (idx) {
 	case CMDQ_ERR_CERROR_ABT_IDX:
-		dev_err(smmu->dev, "retrying command fetch\n");
+		mmu_err(smmu, "retrying command fetch\n");
 	case CMDQ_ERR_CERROR_NONE_IDX:
 		return;
 	case CMDQ_ERR_CERROR_ILL_IDX:
@@ -939,13 +969,13 @@ static void arm_smmu_cmdq_skip_err(struct arm_smmu_device *smmu)
 	 * not to touch any of the shadow cmdq state.
 	 */
 	queue_read(cmd, Q_ENT(q, idx), q->ent_dwords);
-	dev_err(smmu->dev, "skipping command in error state:\n");
+	mmu_err(smmu, "skipping command in error state:\n");
 	for (i = 0; i < ARRAY_SIZE(cmd); ++i)
-		dev_err(smmu->dev, "\t0x%016llx\n", (unsigned long long)cmd[i]);
+		mmu_err(smmu, "\t0x%016llx\n", (unsigned long long)cmd[i]);
 
 	/* Convert the erroneous command into a CMD_SYNC */
 	if (arm_smmu_cmdq_build_cmd(cmd, &cmd_sync)) {
-		dev_err(smmu->dev, "failed to convert to CMD_SYNC\n");
+		mmu_err(smmu, "failed to convert to CMD_SYNC\n");
 		return;
 	}
 
@@ -961,7 +991,7 @@ static void arm_smmu_cmdq_issue_cmd(struct arm_smmu_device *smmu,
 	struct arm_smmu_queue *q = &smmu->cmdq.q;
 
 	if (arm_smmu_cmdq_build_cmd(cmd, ent)) {
-		dev_warn(smmu->dev, "ignoring unknown CMDQ opcode 0x%x\n",
+		mmu_warn(smmu, "ignoring unknown CMDQ opcode 0x%x\n",
 			 ent->opcode);
 		return;
 	}
@@ -974,11 +1004,11 @@ static void arm_smmu_cmdq_issue_cmd(struct arm_smmu_device *smmu,
 		 * like it's behind us.
 		 */
 		if (queue_poll_cons(q, until, wfe))
-			dev_err_ratelimited(smmu->dev, "CMDQ timeout\n");
+			mmu_err_ratelimited(smmu, "CMDQ timeout\n");
 	}
 
 	if (ent->opcode == CMDQ_OP_CMD_SYNC && queue_poll_cons(q, until, wfe))
-		dev_err_ratelimited(smmu->dev, "CMD_SYNC timeout\n");
+		mmu_err_ratelimited(smmu, "CMD_SYNC timeout\n");
 	spin_unlock(&smmu->cmdq.lock);
 }
 
@@ -1241,7 +1271,7 @@ static int arm_smmu_init_l2_strtab(struct arm_smmu_device *smmu, u32 sid)
 	desc->l2ptr = dmam_alloc_coherent(smmu->dev, size, &desc->l2ptr_dma,
 					  GFP_KERNEL | __GFP_ZERO);
 	if (!desc->l2ptr) {
-		dev_err(smmu->dev,
+		mmu_err(smmu,
 			"failed to allocate l2 stream table for SID %u\n",
 			sid);
 		return -ENOMEM;
@@ -1264,9 +1294,9 @@ static irqreturn_t arm_smmu_evtq_thread(int irq, void *dev)
 	while (!queue_remove_raw(q, evt)) {
 		u8 id = evt[0] >> EVTQ_0_ID_SHIFT & EVTQ_0_ID_MASK;
 
-		dev_info(smmu->dev, "event 0x%02x received:\n", id);
+		mmu_info(smmu, "event 0x%02x received:\n", id);
 		for (i = 0; i < ARRAY_SIZE(evt); ++i)
-			dev_info(smmu->dev, "\t0x%016llx\n",
+			mmu_info(smmu, "\t0x%016llx\n",
 				 (unsigned long long)evt[i]);
 	}
 
@@ -1286,7 +1316,7 @@ static irqreturn_t arm_smmu_evtq_handler(int irq, void *dev)
 	 * trying harder.
 	 */
 	if (queue_sync_prod(q) == -EOVERFLOW)
-		dev_err(smmu->dev, "EVTQ overflow detected -- events lost\n");
+		mmu_err(smmu, "EVTQ overflow detected -- events lost\n");
 	else if (queue_empty(q))
 		ret = IRQ_NONE;
 
@@ -1310,8 +1340,8 @@ static irqreturn_t arm_smmu_priq_thread(int irq, void *dev)
 		last = evt[0] & PRIQ_0_PRG_LAST;
 		grpid = evt[1] >> PRIQ_1_PRG_IDX_SHIFT & PRIQ_1_PRG_IDX_MASK;
 
-		dev_info(smmu->dev, "unexpected PRI request received:\n");
-		dev_info(smmu->dev,
+		mmu_info(smmu, "unexpected PRI request received:\n");
+		mmu_info(smmu,
 			 "\tsid 0x%08x.0x%05x: [%u%s] %sprivileged %s%s%s access at iova 0x%016llx\n",
 			 sid, ssid, grpid, last ? "L" : "",
 			 evt[0] & PRIQ_0_PERM_PRIV ? "" : "un",
@@ -1349,7 +1379,7 @@ static irqreturn_t arm_smmu_priq_handler(int irq, void *dev)
 
 	/* PRIQ overflow indicates a programming error */
 	if (queue_sync_prod(q) == -EOVERFLOW)
-		dev_err(smmu->dev, "PRIQ overflow detected -- requests lost\n");
+		mmu_err(smmu, "PRIQ overflow detected -- requests lost\n");
 	else if (queue_empty(q))
 		ret = IRQ_NONE;
 
@@ -1376,38 +1406,38 @@ static irqreturn_t arm_smmu_gerror_handler(int irq, void *dev)
 	if (!(active & GERROR_ERR_MASK))
 		return IRQ_NONE; /* No errors pending */
 
-	dev_warn(smmu->dev,
+	mmu_warn(smmu,
 		 "unexpected global error reported (0x%08x), this could be serious\n",
 		 active);
 
 	if (active & GERROR_SFM_ERR) {
-		dev_err(smmu->dev, "device has entered Service Failure Mode!\n");
+		mmu_err(smmu, "device has entered Service Failure Mode!\n");
 		arm_smmu_device_disable(smmu);
 	}
 
 	if (active & GERROR_MSI_GERROR_ABT_ERR)
-		dev_warn(smmu->dev, "GERROR MSI write aborted\n");
+		mmu_warn(smmu, "GERROR MSI write aborted\n");
 
 	if (active & GERROR_MSI_PRIQ_ABT_ERR) {
-		dev_warn(smmu->dev, "PRIQ MSI write aborted\n");
+		mmu_warn(smmu, "PRIQ MSI write aborted\n");
 		arm_smmu_priq_handler(irq, smmu->dev);
 	}
 
 	if (active & GERROR_MSI_EVTQ_ABT_ERR) {
-		dev_warn(smmu->dev, "EVTQ MSI write aborted\n");
+		mmu_warn(smmu, "EVTQ MSI write aborted\n");
 		arm_smmu_evtq_handler(irq, smmu->dev);
 	}
 
 	if (active & GERROR_MSI_CMDQ_ABT_ERR) {
-		dev_warn(smmu->dev, "CMDQ MSI write aborted\n");
+		mmu_warn(smmu, "CMDQ MSI write aborted\n");
 		arm_smmu_cmdq_sync_handler(irq, smmu->dev);
 	}
 
 	if (active & GERROR_PRIQ_ABT_ERR)
-		dev_err(smmu->dev, "PRIQ write aborted -- events may have been lost\n");
+		mmu_err(smmu, "PRIQ write aborted -- events may have been lost\n");
 
 	if (active & GERROR_EVTQ_ABT_ERR)
-		dev_err(smmu->dev, "EVTQ write aborted -- events may have been lost\n");
+		mmu_err(smmu, "EVTQ write aborted -- events may have been lost\n");
 
 	if (active & GERROR_CMDQ_ERR)
 		arm_smmu_cmdq_skip_err(smmu);
@@ -1644,7 +1674,7 @@ static int arm_smmu_domain_finalise_s1(struct arm_smmu_domain *smmu_domain,
 					 &cfg->cdptr_dma,
 					 GFP_KERNEL | __GFP_ZERO);
 	if (!cfg->cdptr) {
-		dev_warn(smmu->dev, "failed to allocate context descriptor\n");
+		mmu_warn(smmu, "failed to allocate context descriptor\n");
 		ret = -ENOMEM;
 		goto out_free_asid;
 	}
@@ -1799,8 +1829,7 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	} else if (smmu_domain->smmu != smmu) {
 		dev_err(dev,
 			"cannot attach to SMMU %s (upstream of %s)\n",
-			dev_name(smmu_domain->smmu->dev),
-			dev_name(smmu->dev));
+			smmu_domain->smmu->log_name, smmu->log_name);
 		ret = -ENXIO;
 		goto out_unlock;
 	}
@@ -2054,7 +2083,7 @@ static int arm_smmu_init_one_queue(struct arm_smmu_device *smmu,
 
 	q->base = dmam_alloc_coherent(smmu->dev, qsz, &q->base_dma, GFP_KERNEL);
 	if (!q->base) {
-		dev_err(smmu->dev, "failed to allocate queue (0x%zx bytes)\n",
+		mmu_err(smmu, "failed to allocate queue (0x%zx bytes)\n",
 			qsz);
 		return -ENOMEM;
 	}
@@ -2106,7 +2135,7 @@ static int arm_smmu_init_l1_strtab(struct arm_smmu_device *smmu)
 
 	cfg->l1_desc = devm_kzalloc(smmu->dev, size, GFP_KERNEL);
 	if (!cfg->l1_desc) {
-		dev_err(smmu->dev, "failed to allocate l1 stream table desc\n");
+		mmu_err(smmu, "failed to allocate l1 stream table desc\n");
 		return -ENOMEM;
 	}
 
@@ -2132,7 +2161,7 @@ static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 
 	size += STRTAB_SPLIT;
 	if (size < smmu->sid_bits)
-		dev_warn(smmu->dev,
+		mmu_warn(smmu,
 			 "2-level strtab only covers %u/%u bits of SID\n",
 			 size, smmu->sid_bits);
 
@@ -2140,7 +2169,7 @@ static int arm_smmu_init_strtab_2lvl(struct arm_smmu_device *smmu)
 	strtab = dmam_alloc_coherent(smmu->dev, l1size, &cfg->strtab_dma,
 				     GFP_KERNEL | __GFP_ZERO);
 	if (!strtab) {
-		dev_err(smmu->dev,
+		mmu_err(smmu,
 			"failed to allocate l1 stream table (%u bytes)\n",
 			size);
 		return -ENOMEM;
@@ -2169,7 +2198,7 @@ static int arm_smmu_init_strtab_linear(struct arm_smmu_device *smmu)
 	strtab = dmam_alloc_coherent(smmu->dev, size, &cfg->strtab_dma,
 				     GFP_KERNEL | __GFP_ZERO);
 	if (!strtab) {
-		dev_err(smmu->dev,
+		mmu_err(smmu,
 			"failed to allocate linear stream table (%u bytes)\n",
 			size);
 		return -ENOMEM;
@@ -2285,7 +2314,7 @@ static void arm_smmu_setup_msis(struct arm_smmu_device *smmu)
 	/* Allocate MSIs for evtq, gerror and priq. Ignore cmdq */
 	ret = platform_msi_domain_alloc_irqs(dev, nvec, arm_smmu_write_msi_msg);
 	if (ret) {
-		dev_warn(dev, "failed to allocate MSIs\n");
+		mmu_warn(smmu, "failed to allocate MSIs\n");
 		return;
 	}
 
@@ -2318,7 +2347,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 	ret = arm_smmu_write_reg_sync(smmu, 0, ARM_SMMU_IRQ_CTRL,
 				      ARM_SMMU_IRQ_CTRLACK);
 	if (ret) {
-		dev_err(smmu->dev, "failed to disable irqs\n");
+		mmu_err(smmu, "failed to disable irqs\n");
 		return ret;
 	}
 
@@ -2332,7 +2361,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 						arm_smmu_evtq_thread,
 						0, "arm-smmu-v3-evtq", smmu);
 		if (ret < 0)
-			dev_warn(smmu->dev, "failed to enable evtq irq\n");
+			mmu_warn(smmu, "failed to enable evtq irq\n");
 	}
 
 	irq = smmu->cmdq.q.irq;
@@ -2341,7 +2370,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 				       arm_smmu_cmdq_sync_handler, 0,
 				       "arm-smmu-v3-cmdq-sync", smmu);
 		if (ret < 0)
-			dev_warn(smmu->dev, "failed to enable cmdq-sync irq\n");
+			mmu_warn(smmu, "failed to enable cmdq-sync irq\n");
 	}
 
 	irq = smmu->gerr_irq;
@@ -2349,7 +2378,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 		ret = devm_request_irq(smmu->dev, irq, arm_smmu_gerror_handler,
 				       0, "arm-smmu-v3-gerror", smmu);
 		if (ret < 0)
-			dev_warn(smmu->dev, "failed to enable gerror irq\n");
+			mmu_warn(smmu, "failed to enable gerror irq\n");
 	}
 
 	if (smmu->features & ARM_SMMU_FEAT_PRI) {
@@ -2361,7 +2390,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 							0, "arm-smmu-v3-priq",
 							smmu);
 			if (ret < 0)
-				dev_warn(smmu->dev,
+				mmu_warn(smmu,
 					 "failed to enable priq irq\n");
 			else
 				irqen_flags |= IRQ_CTRL_PRIQ_IRQEN;
@@ -2372,7 +2401,7 @@ static int arm_smmu_setup_irqs(struct arm_smmu_device *smmu)
 	ret = arm_smmu_write_reg_sync(smmu, irqen_flags,
 				      ARM_SMMU_IRQ_CTRL, ARM_SMMU_IRQ_CTRLACK);
 	if (ret)
-		dev_warn(smmu->dev, "failed to enable irqs\n");
+		mmu_warn(smmu, "failed to enable irqs\n");
 
 	return 0;
 }
@@ -2383,7 +2412,7 @@ static int arm_smmu_device_disable(struct arm_smmu_device *smmu)
 
 	ret = arm_smmu_write_reg_sync(smmu, 0, ARM_SMMU_CR0, ARM_SMMU_CR0ACK);
 	if (ret)
-		dev_err(smmu->dev, "failed to clear cr0\n");
+		mmu_err(smmu, "failed to clear cr0\n");
 
 	return ret;
 }
@@ -2397,7 +2426,7 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	/* Clear CR0 and sync (disables SMMU and queue processing) */
 	reg = readl_relaxed(smmu->base + ARM_SMMU_CR0);
 	if (reg & CR0_SMMUEN)
-		dev_warn(smmu->dev, "SMMU currently enabled! Resetting...\n");
+		mmu_warn(smmu, "SMMU currently enabled! Resetting...\n");
 
 	ret = arm_smmu_device_disable(smmu);
 	if (ret)
@@ -2440,7 +2469,7 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	ret = arm_smmu_write_reg_sync(smmu, enables, ARM_SMMU_CR0,
 				      ARM_SMMU_CR0ACK);
 	if (ret) {
-		dev_err(smmu->dev, "failed to enable command queue\n");
+		mmu_err(smmu, "failed to enable command queue\n");
 		return ret;
 	}
 
@@ -2470,7 +2499,7 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	ret = arm_smmu_write_reg_sync(smmu, enables, ARM_SMMU_CR0,
 				      ARM_SMMU_CR0ACK);
 	if (ret) {
-		dev_err(smmu->dev, "failed to enable event queue\n");
+		mmu_err(smmu, "failed to enable event queue\n");
 		return ret;
 	}
 
@@ -2487,14 +2516,14 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 		ret = arm_smmu_write_reg_sync(smmu, enables, ARM_SMMU_CR0,
 					      ARM_SMMU_CR0ACK);
 		if (ret) {
-			dev_err(smmu->dev, "failed to enable PRI queue\n");
+			mmu_err(smmu, "failed to enable PRI queue\n");
 			return ret;
 		}
 	}
 
 	ret = arm_smmu_setup_irqs(smmu);
 	if (ret) {
-		dev_err(smmu->dev, "failed to setup irqs\n");
+		mmu_err(smmu, "failed to setup irqs\n");
 		return ret;
 	}
 
@@ -2503,7 +2532,7 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	ret = arm_smmu_write_reg_sync(smmu, enables, ARM_SMMU_CR0,
 				      ARM_SMMU_CR0ACK);
 	if (ret) {
-		dev_err(smmu->dev, "failed to enable SMMU interface\n");
+		mmu_err(smmu, "failed to enable SMMU interface\n");
 		return ret;
 	}
 
@@ -2544,7 +2573,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 		break;
 #endif
 	default:
-		dev_err(smmu->dev, "unknown/unsupported TT endianness!\n");
+		mmu_err(smmu, "unknown/unsupported TT endianness!\n");
 		return -ENXIO;
 	}
 
@@ -2569,7 +2598,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	 * register, but warn on mismatch.
 	 */
 	if (!!(reg & IDR0_COHACC) != coherent)
-		dev_warn(smmu->dev, "IDR0.COHACC overridden by dma-coherent property (%s)\n",
+		mmu_warn(smmu, "IDR0.COHACC overridden by dma-coherent property (%s)\n",
 			 coherent ? "true" : "false");
 
 	switch (reg & IDR0_STALL_MODEL_MASK << IDR0_STALL_MODEL_SHIFT) {
@@ -2586,7 +2615,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 		smmu->features |= ARM_SMMU_FEAT_TRANS_S2;
 
 	if (!(reg & (IDR0_S1P | IDR0_S2P))) {
-		dev_err(smmu->dev, "no translation support!\n");
+		mmu_err(smmu, "no translation support!\n");
 		return -ENXIO;
 	}
 
@@ -2598,7 +2627,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	case IDR0_TTF_AARCH64:
 		break;
 	default:
-		dev_err(smmu->dev, "AArch64 table format not supported!\n");
+		mmu_err(smmu, "AArch64 table format not supported!\n");
 		return -ENXIO;
 	}
 
@@ -2609,7 +2638,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 	/* IDR1 */
 	reg = readl_relaxed(smmu->base + ARM_SMMU_IDR1);
 	if (reg & (IDR1_TABLES_PRESET | IDR1_QUEUES_PRESET | IDR1_REL)) {
-		dev_err(smmu->dev, "embedded implementation not supported\n");
+		mmu_err(smmu, "embedded implementation not supported\n");
 		return -ENXIO;
 	}
 
@@ -2618,7 +2647,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 				       reg >> IDR1_CMDQ_SHIFT & IDR1_CMDQ_MASK);
 	if (!smmu->cmdq.q.max_n_shift) {
 		/* Odd alignment restrictions on the base, so ignore for now */
-		dev_err(smmu->dev, "unit-length command queue not supported\n");
+		mmu_err(smmu, "unit-length command queue not supported\n");
 		return -ENXIO;
 	}
 
@@ -2676,7 +2705,7 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 		smmu->oas = 44;
 		break;
 	default:
-		dev_info(smmu->dev,
+		mmu_info(smmu,
 			"unknown output address size. Truncating to 48-bit\n");
 		/* Fallthrough */
 	case IDR5_OAS_48_BIT:
@@ -2685,12 +2714,12 @@ static int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu)
 
 	/* Set the DMA mask for our table walker */
 	if (dma_set_mask_and_coherent(smmu->dev, DMA_BIT_MASK(smmu->oas)))
-		dev_warn(smmu->dev,
+		mmu_warn(smmu,
 			 "failed to set DMA mask for table walker\n");
 
 	smmu->ias = max(smmu->ias, smmu->oas);
 
-	dev_info(smmu->dev, "ias %lu-bit, oas %lu-bit (features 0x%08x)\n",
+	mmu_info(smmu, "ias %lu-bit, oas %lu-bit (features 0x%08x)\n",
 		 smmu->ias, smmu->oas, smmu->features);
 	return 0;
 }
@@ -2710,6 +2739,11 @@ static int arm_smmu_device_acpi_probe(struct platform_device *pdev,
 
 	if (iort_smmu->flags & ACPI_IORT_SMMU_V3_COHACC_OVERRIDE)
 		smmu->features |= ARM_SMMU_FEAT_COHERENCY;
+
+	/* Update log_name if the useless "auto" name is still being used */
+	if (!strcmp(smmu->log_name, dev_name(dev)))
+		smmu->log_name = kasprintf(GFP_KERNEL, "[0x%08llX]",
+					   iort_smmu->base_address >> 16);
 
 	return 0;
 }
@@ -2746,10 +2780,18 @@ static int arm_smmu_device_probe(struct platform_device *pdev)
 	}
 	smmu->dev = dev;
 
+	/* Get the name the smmu will use for logging */
+	ret = device_property_read_string(smmu->dev, "smmu-name",
+					  &smmu->log_name);
+	if (ret)
+		smmu->log_name = dev_name(dev); /* Default */
+	else
+		dev_info(dev, "using log_name [%s] for smmu", smmu->log_name);
+
 	/* Base address */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (resource_size(res) + 1 < SZ_128K) {
-		dev_err(dev, "MMIO region too small (%pr)\n", res);
+		mmu_err(smmu, "MMIO region too small (%pr)\n", res);
 		return -EINVAL;
 	}
 
