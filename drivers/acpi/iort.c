@@ -376,7 +376,7 @@ iort_node_map_rid(struct acpi_iort_node *node, u32 rid_in,
 			}
 
 			if (rid_in < id->input_base ||
-			    (rid_in > id->input_base + id->id_count))
+			    (rid_in >= id->input_base + id->id_count))
 				continue;
 
 			rid_in = id->output_base + (rid_in - id->input_base);
@@ -535,7 +535,10 @@ const struct iommu_ops *iort_iommu_configure(struct device *dev)
 {
 	struct acpi_iort_node *node, *parent;
 	const struct iort_ops_node *iort_ops;
-	u32 rid = 0, devid = 0;
+	u32 rid = 0, sid = 0;
+	u32 *sids = NULL;
+	u32 num_sids = 0;
+	int ret;
 
 	if (dev_is_pci(dev)) {
 		struct pci_bus *bus = to_pci_dev(dev)->bus;
@@ -554,19 +557,50 @@ const struct iommu_ops *iort_iommu_configure(struct device *dev)
 		return NULL;
 
 	parent = iort_find_parent_node(node);
-
 	if (!parent)
 		return NULL;
 
 	iort_ops = iort_smmu_get_ops_node(parent);
+	if (!iort_ops || !iort_ops->iommu_xlate)
+		return NULL;
 
-	if (iort_ops && iort_ops->iommu_xlate) {
-		iort_node_map_rid(node, rid, &devid, parent->type);
-		iort_ops->iommu_xlate(dev, 1, &devid, parent);
-		return iort_ops->ops;
+	if (dev_is_pci(dev)) {
+		/* Map the PCI device's RID to a SID on the parent SMMU */
+		if (iort_node_map_rid(node, rid, &sid, parent->type)) {
+			sids = &sid;
+			num_sids = 1;
+			pr_debug("%s(%s) : PCI_RID [0x%X] -> SID [0x%X]\n",
+				 __func__, dev_name(dev), rid, sid);
+		}
+	} else {
+		/*
+		 * Named components don't really have RIDs so just assume that
+		 * the mappings are setup such that the devices's "virtual" RIDs
+		 * are contiguous starting at 0. Under that assumption, we can
+		 * get all of the device's SIDs by calling iort_dev_map_rid()
+		 * with increasing input RID values until it fails.
+		 */
+		rid = 0;
+		while (iort_node_map_rid(node, rid++, &sid, parent->type))
+			num_sids++;
+
+		sids = kcalloc(num_sids, sizeof(sid), GFP_KERNEL);
+		if (!sids)
+			return NULL;
+
+		for (rid = 0; rid < num_sids; rid++) {
+			iort_node_map_rid(node, rid, sids + rid, parent->type);
+			pr_debug("%s(%s) : SID[%d] = [0x%X]\n",
+				 __func__, dev_name(dev), rid, sids[rid]);
+		}
 	}
 
-	return NULL;
+	ret = iort_ops->iommu_xlate(dev, num_sids, sids, parent);
+
+	if (!dev_is_pci(dev))
+		kfree(sids);
+
+	return ret ? NULL : iort_ops->ops;
 }
 
 static int __init
