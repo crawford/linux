@@ -25,7 +25,7 @@
 #include <linux/pci-ecam.h>
 
 /* Root pointer to the mapped MCFG table */
-static struct acpi_table_mcfg *mcfg_table;
+static struct acpi_table_mcfg mcfg_table_header;
 
 /* Structure to hold entries from the MCFG table */
 struct mcfg_entry {
@@ -56,9 +56,6 @@ struct pci_ecam_ops *pci_mcfg_get_ops(struct acpi_pci_root *root)
 	int domain = root->segment;
 	struct pci_cfg_fixup *f;
 
-	if (!mcfg_table)
-		return &pci_generic_ecam_ops;
-
 	/*
 	 * Match against platform specific quirks and return corresponding CAM
 	 * ops.
@@ -69,7 +66,7 @@ struct pci_ecam_ops *pci_mcfg_get_ops(struct acpi_pci_root *root)
 	for (f = __start_acpi_mcfg_fixups; f < __end_acpi_mcfg_fixups; f++) {
 		if ((f->domain == domain || f->domain == PCI_MCFG_DOMAIN_ANY) &&
 		    (f->bus_num == bus_num || f->bus_num == PCI_MCFG_BUS_ANY) &&
-		    pci_mcfg_fixup_match(f, &mcfg_table->header)) {
+		    pci_mcfg_fixup_match(f, &mcfg_table_header.header)) {
 			pr_info("Handling %s %s r%d PCI MCFG quirks\n",
 				f->oem_id, f->oem_table_id, f->oem_revision);
 			return f->ops;
@@ -100,6 +97,7 @@ static __init int pci_mcfg_parse(struct acpi_table_header *header)
 {
 	struct acpi_mcfg_allocation *mptr;
 	struct mcfg_entry *e, *arr;
+	struct acpi_table_mcfg *mcfg;
 	int i, n;
 
 	if (header->length < sizeof(struct acpi_table_mcfg))
@@ -107,8 +105,9 @@ static __init int pci_mcfg_parse(struct acpi_table_header *header)
 
 	n = (header->length - sizeof(struct acpi_table_mcfg)) /
 					sizeof(struct acpi_mcfg_allocation);
-	mcfg_table = (struct acpi_table_mcfg *)header;
-	mptr = (struct acpi_mcfg_allocation *) &mcfg_table[1];
+	mcfg_table_header = *(struct acpi_table_mcfg *)header;
+	mcfg = (struct acpi_table_mcfg *)header;
+	mptr = (struct acpi_mcfg_allocation *) &mcfg[1];
 
 	arr = kcalloc(n, sizeof(*arr), GFP_KERNEL);
 	if (!arr)
