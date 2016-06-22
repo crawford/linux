@@ -627,7 +627,7 @@ typedef u64 acpi_integer;
 #define ACPI_NOTIFY_DEVICE_PLD_CHECK    (u8) 0x09
 #define ACPI_NOTIFY_RESERVED            (u8) 0x0A
 #define ACPI_NOTIFY_LOCALITY_UPDATE     (u8) 0x0B
-#define ACPI_NOTIFY_SHUTDOWN_REQUEST    (u8) 0x0C
+#define ACPI_NOTIFY_RESERVED_2          (u8) 0x0C
 #define ACPI_NOTIFY_AFFINITY_UPDATE     (u8) 0x0D
 
 #define ACPI_GENERIC_NOTIFY_MAX         0x0D
