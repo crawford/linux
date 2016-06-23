@@ -459,6 +459,10 @@ void put_iova_domain(struct iova_domain *iovad)
 	struct rb_node *node;
 	unsigned long flags;
 
+	/* Only teardown properly initialized domains */
+	if (!iovad || !iovad->granule)
+		return;
+
 	free_iova_rcaches(iovad);
 	spin_lock_irqsave(&iovad->iova_rbtree_lock, flags);
 	node = rb_first(&iovad->rbroot);
