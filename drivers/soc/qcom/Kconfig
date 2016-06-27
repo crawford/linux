@@ -19,6 +19,16 @@ config QCOM_L2_ACCESSORS
 	  Provides support for accessing registers in the L2 cache
 	  for Qualcomm Technologies chips.
 
+config QCOM_PERF_EVENTS_L2
+	bool "Qualcomm Technologies L2-cache perf events"
+	depends on ARCH_QCOM && HW_PERF_EVENTS
+	select QCOM_L2_ACCESSORS
+	  help
+	  Provides support for the L2 cache performance monitor unit (PMU)
+	  in Qualcomm Technologies processors.
+	  Adds the L2 cache PMU into the perf events subsystem for
+	  monitoring L2 cache events.
+
 config QCOM_PM
 	bool "Qualcomm Power Management"
 	depends on ARCH_QCOM && !ARM64
