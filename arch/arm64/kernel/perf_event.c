@@ -1047,6 +1047,7 @@ static const struct of_device_id armv8_pmu_of_device_ids[] = {
 static const struct pmu_probe_info armv8_pmu_probe_table[] = {
 	ARMV8_PMU_PART_PROBE(ARM_CPU_PART_CORTEX_A53, armv8_a53_pmu_init),
 	ARMV8_PMU_PART_PROBE(ARM_CPU_PART_CORTEX_A57, armv8_a57_pmu_init),
+	ARMV8_PMU_PART_PROBE(ARM_CPU_PART_CORTEX_A72, armv8_a72_pmu_init),
 	PMU_PROBE(0, 0, armv8_pmuv3_init), /* if all else fails... */
 	{ /* sentinel value */ }
 };

@@ -11,6 +11,7 @@
  */
 #define pr_fmt(fmt) "hw perfevents: " fmt
 
+#include <linux/acpi.h>
 #include <linux/bitmap.h>
 #include <linux/cpumask.h>
 #include <linux/cpu_pm.h>
@@ -24,6 +25,7 @@
 #include <linux/irq.h>
 #include <linux/irqdesc.h>
 
+#include <asm/cpu.h>
 #include <asm/cputype.h>
 #include <asm/irq_regs.h>
 
@@ -872,25 +874,52 @@ static void cpu_pmu_destroy(struct arm_pmu *cpu_pmu)
 }
 
 /*
- * CPU PMU identification and probing.
+ * CPU PMU identification and probing. Its possible to have
+ * multiple CPU types in an ARM machine. Assure that we are
+ * picking the right PMU types based on the CPU in question
  */
-static int probe_current_pmu(struct arm_pmu *pmu,
-			     const struct pmu_probe_info *info)
+static int probe_plat_pmu(struct arm_pmu *pmu,
+			     const struct pmu_probe_info *info,
+			     unsigned int pmuid)
 {
-	int cpu = get_cpu();
-	unsigned int cpuid = read_cpuid_id();
 	int ret = -ENODEV;
+	int cpu;
+	int aff_ctr = 0;
+	struct platform_device *pdev = pmu->plat_device;
+	int irq = platform_get_irq(pdev, 0);
 
-	pr_info("probing PMU on CPU %d\n", cpu);
+	if (irq >= 0 && !irq_is_percpu(irq)) {
+		pmu->irq_affinity = kcalloc(pdev->num_resources, sizeof(int),
+					    GFP_KERNEL);
+		if (!pmu->irq_affinity)
+			return -ENOMEM;
+	}
+ 
+	for_each_possible_cpu(cpu) {
+		struct cpuinfo_arm64 *cinfo = per_cpu_ptr(&cpu_data, cpu);
+		unsigned int cpuid = cinfo->reg_midr;
+
+		if (cpuid == pmuid) {
+			cpumask_set_cpu(cpu, &pmu->supported_cpus);
+			pr_devel("enable pmu on cpu %d\n", cpu);
+			if (pmu->irq_affinity) {
+				pmu->irq_affinity[aff_ctr] = cpu;
+				aff_ctr++;
+			}
+		}
+	}
+
+	pr_debug("probing PMU %X\n", pmuid);
+	/* find the type of PMU given the CPU */
 
 	for (; info->init != NULL; info++) {
-		if ((cpuid & info->mask) != info->cpuid)
+		if ((pmuid & info->mask) != info->cpuid)
 			continue;
+		pr_devel("Found PMU\n");
 		ret = info->init(pmu);
 		break;
 	}
 
-	put_cpu();
 	return ret;
 }
 
@@ -1010,8 +1039,14 @@ int arm_pmu_device_probe(struct platform_device *pdev,
 		if (!ret)
 			ret = init_fn(pmu);
 	} else {
-		cpumask_setall(&pmu->supported_cpus);
-		ret = probe_current_pmu(pmu, probe_table);
+		if (acpi_disabled) {
+			/* use the boot cpu. */
+			struct cpuinfo_arm64 *cinfo = per_cpu_ptr(&cpu_data, 0);
+			unsigned int cpuid = cinfo->reg_midr;
+
+			ret = probe_plat_pmu(pmu, probe_table, cpuid);
+		} else
+			ret = probe_plat_pmu(pmu, probe_table, pdev->id);
 	}
 
 	if (ret) {
