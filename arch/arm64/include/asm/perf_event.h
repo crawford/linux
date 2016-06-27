@@ -45,6 +45,7 @@
  */
 #define	ARMV8_PMU_EVTYPE_MASK	0xc800ffff	/* Mask for writable bits */
 #define	ARMV8_PMU_EVTYPE_EVENT	0xffff		/* Mask for EVENT bits */
+#define	ARMV8_QC_EVTYPE_EVENT	0xfffff		/* Mask for QC EVENT bits */
 
 #define ARMV8_PMU_EVTYPE_EVENT_SW_INCR	0	/* Software increment event */
 
