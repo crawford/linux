@@ -53,6 +53,6 @@ int acpi_processor_ffh_lpi_probe(unsigned int cpu)
 
 int acpi_processor_ffh_lpi_enter(struct acpi_lpi_state *lpi)
 {
-	return arm_generic_enter_idle_state(lpi->index);
+	return arm_generic_enter_idle_state(lpi->index, lpi->arch_flags);
 }
 #endif

@@ -36,7 +36,7 @@
 static int arm_enter_idle_state(struct cpuidle_device *dev,
 				struct cpuidle_driver *drv, int idx)
 {
-	return arm_generic_enter_idle_state(idx);
+	return arm_generic_enter_idle_state(idx, 1);
 }
 
 static struct cpuidle_driver arm_idle_driver = {

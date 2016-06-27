@@ -5,16 +5,17 @@
 /*
  * arm_enter_idle_state - Programs CPU to enter the specified state
  */
-static int __maybe_unused arm_generic_enter_idle_state(int idx)
+static int __maybe_unused arm_generic_enter_idle_state(int idx, int save_context)
 {
-	int ret;
+	int ret = 0;
 
 	if (!idx) {
 		cpu_do_idle();
 		return idx;
 	}
 
-	ret = cpu_pm_enter();
+	if (save_context)
+		ret = cpu_pm_enter();
 	if (!ret) {
 		/*
 		 * Pass idle state index to cpu_suspend which in turn will
@@ -23,7 +24,8 @@ static int __maybe_unused arm_generic_enter_idle_state(int idx)
 		 */
 		ret = arm_cpuidle_suspend(idx);
 
-		cpu_pm_exit();
+		if (save_context)
+			cpu_pm_exit();
 	}
 
 	return ret ? -1 : idx;
