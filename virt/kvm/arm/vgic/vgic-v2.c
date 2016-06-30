@@ -333,18 +333,6 @@ int vgic_v2_probe(const struct gic_kvm_info *info)
 	vtr = readl_relaxed(kvm_vgic_global_state.vctrl_base + GICH_VTR);
 	kvm_vgic_global_state.nr_lr = (vtr & 0x3f) + 1;
 
-	ret = create_hyp_io_mappings(kvm_vgic_global_state.vctrl_base,
-				     kvm_vgic_global_state.vctrl_base +
-					 resource_size(&info->vctrl),
-				     info->vctrl.start);
-
-	if (ret) {
-		kvm_err("Cannot map VCTRL into hyp\n");
-		iounmap(kvm_vgic_global_state.vctrl_base);
-		return ret;
-	}
-
-	kvm_vgic_global_state.can_emulate_gicv2 = true;
 	ret = kvm_register_vgic_device(KVM_DEV_TYPE_ARM_VGIC_V2);
 	if (ret) {
 		kvm_err("Cannot register GICv2 KVM device\n");
@@ -352,6 +340,18 @@ int vgic_v2_probe(const struct gic_kvm_info *info)
 		return ret;
 	}
 
+	ret = create_hyp_io_mappings(kvm_vgic_global_state.vctrl_base,
+				     kvm_vgic_global_state.vctrl_base +
+					 resource_size(&info->vctrl),
+				     info->vctrl.start);
+	if (ret) {
+		kvm_err("Cannot map VCTRL into hyp\n");
+		kvm_unregister_device_ops(KVM_DEV_TYPE_ARM_VGIC_V2);
+		iounmap(kvm_vgic_global_state.vctrl_base);
+		return ret;
+	}
+
+	kvm_vgic_global_state.can_emulate_gicv2 = true;
 	kvm_vgic_global_state.vcpu_base = info->vcpu.start;
 	kvm_vgic_global_state.type = VGIC_V2;
 	kvm_vgic_global_state.max_gic_vcpus = VGIC_V2_MAX_CPUS;
