@@ -754,11 +754,13 @@ static int vits_cmd_handle_mapc(struct kvm *kvm, struct vgic_its *its,
 				ret = -ENOMEM;
 				goto out_unlock;
 			}
-		}
 
-		vits_init_collection(its, collection, coll_id);
-		collection->target_addr = target_addr;
-		update_affinity_collection(kvm, its, collection);
+			vits_init_collection(its, collection, coll_id);
+			collection->target_addr = target_addr;
+		} else {
+			collection->target_addr = target_addr;
+			update_affinity_collection(kvm, its, collection);
+		}
 	}
 
 out_unlock:
