@@ -346,7 +346,7 @@ void vgic_mmio_write_config(struct kvm_vcpu *vcpu,
 	int i;
 
 	for (i = 0; i < len * 4; i++) {
-		struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
+		struct vgic_irq *irq;
 
 		/*
 		 * The configuration cannot be changed for SGIs in general,
@@ -357,15 +357,17 @@ void vgic_mmio_write_config(struct kvm_vcpu *vcpu,
 		if (intid + i < VGIC_NR_PRIVATE_IRQS)
 			continue;
 
+		irq = vgic_get_irq(vcpu->kvm, vcpu, intid + i);
 		spin_lock(&irq->irq_lock);
+
 		if (test_bit(i * 2 + 1, &val)) {
 			irq->config = VGIC_CONFIG_EDGE;
 		} else {
 			irq->config = VGIC_CONFIG_LEVEL;
 			irq->pending = irq->line_level | irq->soft_pending;
 		}
-		spin_unlock(&irq->irq_lock);
 
+		spin_unlock(&irq->irq_lock);
 		vgic_put_irq(vcpu->kvm, irq);
 	}
 }

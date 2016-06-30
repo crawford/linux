@@ -126,13 +126,15 @@ static void vgic_mmio_write_irouter(struct kvm_vcpu *vcpu,
 				    unsigned long val)
 {
 	int intid = VGIC_ADDR_TO_INTID(addr, 64);
-	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, NULL, intid);
-
-	if (!irq)
-		return;
+	struct vgic_irq *irq;
 
 	/* The upper word is WI for us since we don't implement Aff3. */
 	if (addr & 4)
+		return;
+
+	irq = vgic_get_irq(vcpu->kvm, NULL, intid);
+
+	if (!irq)
 		return;
 
 	spin_lock(&irq->irq_lock);

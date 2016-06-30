@@ -398,12 +398,13 @@ int kvm_vgic_map_phys_irq(struct kvm_vcpu *vcpu, u32 virt_irq, u32 phys_irq)
 
 int kvm_vgic_unmap_phys_irq(struct kvm_vcpu *vcpu, unsigned int virt_irq)
 {
-	struct vgic_irq *irq = vgic_get_irq(vcpu->kvm, vcpu, virt_irq);
-
-	BUG_ON(!irq);
+	struct vgic_irq *irq;
 
 	if (!vgic_initialized(vcpu->kvm))
 		return -EAGAIN;
+
+	irq = vgic_get_irq(vcpu->kvm, vcpu, virt_irq);
+	BUG_ON(!irq);
 
 	spin_lock(&irq->irq_lock);
 
