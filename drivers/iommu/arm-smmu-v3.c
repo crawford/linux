@@ -1738,6 +1738,7 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 	}
 
 	master->ste.bypass = false;
+	master->ste.valid = true;
 
 	arm_smmu_install_ste(master, smmu_domain);
 
