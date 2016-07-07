@@ -844,7 +844,7 @@ static void queue_iommu_attach(struct device *dev, const struct iommu_ops *ops,
 }
 
 static int __iommu_attach_notifier(struct notifier_block *nb,
-				   unsigned long action, void *data)
+				   unsigned long action, void *dev)
 {
 	struct iommu_dma_notifier_data *master, *tmp;
 
@@ -853,6 +853,9 @@ static int __iommu_attach_notifier(struct notifier_block *nb,
 
 	mutex_lock(&iommu_dma_notifier_lock);
 	list_for_each_entry_safe(master, tmp, &iommu_dma_masters, list) {
+		if (dev != master->dev)
+			continue;
+
 		if (do_iommu_attach(master->dev, master->ops,
 				master->dma_base, master->size)) {
 			list_del(&master->list);
