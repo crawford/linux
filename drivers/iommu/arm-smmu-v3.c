@@ -687,7 +687,8 @@ struct arm_smmu_master_data {
 	struct arm_smmu_device		*smmu;
 
 	struct arm_smmu_strtab_ent	ste;
-	u32				sid;
+	u32				*sids;
+	u32				num_sids;
 };
 
 struct arm_smmu_option_prop {
@@ -1698,7 +1699,8 @@ static void arm_smmu_install_ste(struct arm_smmu_master_data *master,
 {
 	struct arm_smmu_device *smmu = master->smmu;
 	struct arm_smmu_strtab_ent *ste = &master->ste;
-	__le64 *step = arm_smmu_get_step_for_sid(smmu, master->sid);
+	__le64 *step = NULL;
+	int i;
 
 	if (smmu_domain->stage == ARM_SMMU_DOMAIN_S1) {
 		ste->s1_cfg = &smmu_domain->s1_cfg;
@@ -1709,7 +1711,10 @@ static void arm_smmu_install_ste(struct arm_smmu_master_data *master,
 		ste->s2_cfg = &smmu_domain->s2_cfg;
 	}
 
-	arm_smmu_write_strtab_ent(smmu, master->sid, step, ste);
+	for (i = 0; i < master->num_sids; i++) {
+		step = arm_smmu_get_step_for_sid(smmu, master->sids[i]);
+		arm_smmu_write_strtab_ent(smmu, master->sids[i], step, ste);
+	}
 }
 
 static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
@@ -1831,6 +1836,7 @@ static int arm_smmu_add_device(struct device *dev)
 {
 	struct arm_smmu_device *smmu;
 	struct arm_smmu_master_data *data = dev->archdata.iommu;
+	int i, ret;
 
 	if (!data)
 		return -ENODEV;
@@ -1840,16 +1846,21 @@ static int arm_smmu_add_device(struct device *dev)
 	if (!smmu)
 		return -ENODEV;
 
+	if (!data->sids || !data->num_sids)
+		return -EINVAL;
+
 	/* Check the SID is in range of the SMMU and our stream table */
-	if (!arm_smmu_sid_in_range(smmu, data->sid))
-		return -ERANGE;
+	for (i = 0; i < data->num_sids; i++)
+		if (!arm_smmu_sid_in_range(smmu, data->sids[i]))
+			return -ERANGE;
 
 	/* Ensure l2 strtab is initialised */
 	if (smmu->features & ARM_SMMU_FEAT_2_LVL_STRTAB) {
-		int ret = arm_smmu_init_l2_strtab(smmu, data->sid);
-
-		if (ret)
-			return ret;
+		for (i = 0; i < data->num_sids; i++) {
+			ret = arm_smmu_init_l2_strtab(smmu, data->sids[i]);
+			if (ret)
+				return ret;
+		}
 	}
 
 	return PTR_ERR_OR_ZERO(iommu_group_get_for_dev(dev));
@@ -1940,7 +1951,15 @@ static int arm_smmu_of_xlate(struct device *dev, struct of_phandle_args *args)
 	 */
 	data->handle.type = ARM_SMMU_FW_OF;
 	data->handle.np = args->np;
-	data->sid = args->args[0];
+
+	data->num_sids = args->args_count;
+	data->sids = kmemdup(args->args, sizeof(*data->sids) * data->num_sids,
+			     GFP_KERNEL);
+	if (!data->sids) {
+		kfree(data);
+		return -ENOMEM;
+	}
+
 	dev->archdata.iommu = data;
 
 	return 0;
@@ -2810,7 +2829,15 @@ static int arm_smmu_iort_xlate(struct device *dev, u32 streamid,
 
 	data->handle.type = ARM_SMMU_FW_IORT;
 	data->handle.iort_node = node;
-	data->sid = streamid;
+
+	data->num_sids = 1;
+	data->sids = kcalloc(data->num_sids, sizeof(*data->sids), GFP_KERNEL);
+	if (!data->sids) {
+		kfree(data);
+		return -ENOMEM;
+	}
+	data->sids[0] = streamid;
+
 	dev->archdata.iommu = data;
 	return 0;
 }
