@@ -74,7 +74,7 @@ struct iort_ops_node {
 	struct list_head list;
 	struct acpi_iort_node *node;
 	const struct iommu_ops *ops;
-	int (*iommu_xlate)(struct device *dev, u32 streamid,
+	int (*iommu_xlate)(struct device *dev, u32 num_sids, u32 *sids,
 			   struct acpi_iort_node *node);
 };
 static LIST_HEAD(iort_iommu_ops);
@@ -93,9 +93,10 @@ static DEFINE_SPINLOCK(iort_ops_lock);
  *          -ENOMEM on failure
  */
 int iort_smmu_set_ops(struct acpi_iort_node *node,
-		       const struct iommu_ops *ops,
-		       int (*iommu_xlate)(struct device *dev, u32 streamid,
-					  struct acpi_iort_node *node))
+		      const struct iommu_ops *ops,
+		      int (*iommu_xlate)(struct device *dev,
+					 u32 num_sids, u32 *sids,
+					 struct acpi_iort_node *node))
 {
 	struct iort_ops_node *iommu = kzalloc(sizeof(*iommu), GFP_KERNEL);
 
@@ -561,7 +562,7 @@ const struct iommu_ops *iort_iommu_configure(struct device *dev)
 
 	if (iort_ops && iort_ops->iommu_xlate) {
 		iort_node_map_rid(node, rid, &devid, parent->type);
-		iort_ops->iommu_xlate(dev, devid, parent);
+		iort_ops->iommu_xlate(dev, 1, &devid, parent);
 		return iort_ops->ops;
 	}
 

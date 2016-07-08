@@ -2812,7 +2812,7 @@ static int __init arm_smmu_of_init(struct device_node *np)
 IOMMU_OF_DECLARE(arm_smmuv3, "arm,smmu-v3", arm_smmu_of_init);
 
 #ifdef CONFIG_ACPI
-static int arm_smmu_iort_xlate(struct device *dev, u32 streamid,
+static int arm_smmu_iort_xlate(struct device *dev, u32 num_sids, u32 *sids,
 			       struct acpi_iort_node *node)
 {
 	struct arm_smmu_master_data *data;
@@ -2823,6 +2823,9 @@ static int arm_smmu_iort_xlate(struct device *dev, u32 streamid,
 	if (dev->archdata.iommu)
 		return -EEXIST;
 
+	if (!num_sids || !sids)
+		return -EINVAL;
+
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
@@ -2830,13 +2833,12 @@ static int arm_smmu_iort_xlate(struct device *dev, u32 streamid,
 	data->handle.type = ARM_SMMU_FW_IORT;
 	data->handle.iort_node = node;
 
-	data->num_sids = 1;
-	data->sids = kcalloc(data->num_sids, sizeof(*data->sids), GFP_KERNEL);
+	data->num_sids = num_sids;
+	data->sids = kmemdup(sids, num_sids * sizeof(*sids), GFP_KERNEL);
 	if (!data->sids) {
 		kfree(data);
 		return -ENOMEM;
 	}
-	data->sids[0] = streamid;
 
 	dev->archdata.iommu = data;
 	return 0;

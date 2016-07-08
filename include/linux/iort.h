@@ -49,7 +49,7 @@ iort_iommu_configure(struct device *dev) { return NULL; }
 int iort_smmu_set_ops(struct acpi_iort_node *node,
 		      const struct iommu_ops *ops,
 		      int (*iommu_xlate)(struct device *dev,
-					 u32 streamid,
+					 u32 num_sids, u32 *sids,
 					 struct acpi_iort_node *node));
 
 struct iort_iommu_config {
