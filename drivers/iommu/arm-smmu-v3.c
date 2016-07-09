@@ -1061,16 +1061,29 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 
 	if (ste->s1_cfg) {
 		BUG_ON(ste_live);
-		dst[1] = cpu_to_le64(
-			 STRTAB_STE_1_S1C_CACHE_WBRA
-			 << STRTAB_STE_1_S1CIR_SHIFT |
-			 STRTAB_STE_1_S1C_CACHE_WBRA
-			 << STRTAB_STE_1_S1COR_SHIFT |
-			 STRTAB_STE_1_S1C_SH_ISH << STRTAB_STE_1_S1CSH_SHIFT |
+		if (smmu->features & ARM_SMMU_FEAT_COHERENCY) {
+			dst[1] = cpu_to_le64(
+				 STRTAB_STE_1_S1C_CACHE_WBRA
+				 << STRTAB_STE_1_S1CIR_SHIFT |
+				 STRTAB_STE_1_S1C_CACHE_WBRA
+				 << STRTAB_STE_1_S1COR_SHIFT |
+				 STRTAB_STE_1_S1C_SH_ISH
+				 << STRTAB_STE_1_S1CSH_SHIFT);
+		} else {
+			dst[1] = cpu_to_le64(
+				 STRTAB_STE_1_S1C_CACHE_NC
+				 << STRTAB_STE_1_S1CIR_SHIFT |
+				 STRTAB_STE_1_S1C_CACHE_NC
+				 << STRTAB_STE_1_S1COR_SHIFT |
+				 STRTAB_STE_1_S1C_SH_OSH
+				 << STRTAB_STE_1_S1CSH_SHIFT);
+		}
 #ifdef CONFIG_PCI_ATS
-			 STRTAB_STE_1_EATS_TRANS << STRTAB_STE_1_EATS_SHIFT |
+		dst[1] |= cpu_to_le64(STRTAB_STE_1_EATS_TRANS
+				      << STRTAB_STE_1_EATS_SHIFT);
 #endif
-			 STRTAB_STE_1_STRW_NSEL1 << STRTAB_STE_1_STRW_SHIFT);
+		dst[1] |= cpu_to_le64(STRTAB_STE_1_STRW_NSEL1
+				      << STRTAB_STE_1_STRW_SHIFT);
 
 		if (smmu->features & ARM_SMMU_FEAT_STALLS)
 			dst[1] |= cpu_to_le64(STRTAB_STE_1_S1STALLD);
@@ -2301,12 +2314,21 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 		return ret;
 
 	/* CR1 (table and queue memory attributes) */
-	reg = (CR1_SH_ISH << CR1_TABLE_SH_SHIFT) |
-	      (CR1_CACHE_WB << CR1_TABLE_OC_SHIFT) |
-	      (CR1_CACHE_WB << CR1_TABLE_IC_SHIFT) |
-	      (CR1_SH_ISH << CR1_QUEUE_SH_SHIFT) |
-	      (CR1_CACHE_WB << CR1_QUEUE_OC_SHIFT) |
-	      (CR1_CACHE_WB << CR1_QUEUE_IC_SHIFT);
+	if (smmu->features & ARM_SMMU_FEAT_COHERENCY) {
+		reg = (CR1_SH_ISH << CR1_TABLE_SH_SHIFT) |
+		      (CR1_CACHE_WB << CR1_TABLE_OC_SHIFT) |
+		      (CR1_CACHE_WB << CR1_TABLE_IC_SHIFT) |
+		      (CR1_SH_ISH << CR1_QUEUE_SH_SHIFT) |
+		      (CR1_CACHE_WB << CR1_QUEUE_OC_SHIFT) |
+		      (CR1_CACHE_WB << CR1_QUEUE_IC_SHIFT);
+	} else {
+		reg = (CR1_SH_OSH << CR1_TABLE_SH_SHIFT) |
+		      (CR1_CACHE_NC << CR1_TABLE_OC_SHIFT) |
+		      (CR1_CACHE_NC << CR1_TABLE_IC_SHIFT) |
+		      (CR1_SH_OSH << CR1_QUEUE_SH_SHIFT) |
+		      (CR1_CACHE_NC << CR1_QUEUE_OC_SHIFT) |
+		      (CR1_CACHE_NC << CR1_QUEUE_IC_SHIFT);
+	}
 	writel_relaxed(reg, smmu->base + ARM_SMMU_CR1);
 
 	/* CR2 (random crap) */
