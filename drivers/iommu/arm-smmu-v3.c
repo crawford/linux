@@ -1942,14 +1942,8 @@ static struct iommu_group *arm_smmu_device_group(struct device *dev)
 {
 	struct iommu_group *group;
 
-	/*
-	 * We've currently no means of grouping non-PCI masters, so
-	 * there'd better not be any non-unique stream IDs in the DT...
-	 */
-	if (dev_is_pci(dev))
-		group = pci_device_group(dev);
-	else
-		group = generic_device_group(dev);
+	/* Create a unique group for each master */
+	group = generic_device_group(dev);
 
 	return group;
 }
