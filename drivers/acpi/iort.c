@@ -603,6 +603,25 @@ const struct iommu_ops *iort_iommu_configure(struct device *dev)
 	return ret ? NULL : iort_ops->ops;
 }
 
+u64 iort_get_dma_mask(struct device *dev)
+{
+	struct acpi_iort_node *node;
+	struct acpi_iort_named_component *ncomp;
+	u8 addr_bits;
+
+	node = iort_scan_node(ACPI_IORT_NODE_NAMED_COMPONENT,
+			      iort_match_node_callback, dev);
+	if (!node)
+		return 0;
+
+	ncomp = (struct acpi_iort_named_component *)node->node_data;
+
+	addr_bits = ncomp->memory_address_limit;
+	addr_bits = (addr_bits > 64) ? 64 : addr_bits;
+
+	return DMA_BIT_MASK(addr_bits);
+}
+
 static int __init
 add_smmu_platform_device(const struct iort_iommu_config *iort_cfg,
 			 struct acpi_iort_node *node)

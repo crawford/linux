@@ -1367,6 +1367,7 @@ enum dev_dma_attr acpi_get_dma_attr(struct acpi_device *adev)
 void acpi_dma_configure(struct device *dev, enum dev_dma_attr attr)
 {
 	const struct iommu_ops *iommu;
+	u64 dma_region_size;
 
 	iommu = iort_iommu_configure(dev);
 
@@ -1374,7 +1375,13 @@ void acpi_dma_configure(struct device *dev, enum dev_dma_attr attr)
 	 * Assume dma valid range starts at 0 and covers the whole
 	 * coherent_dma_mask.
 	 */
-	arch_setup_dma_ops(dev, 0, dev->coherent_dma_mask + 1, iommu,
+	dma_region_size = iort_get_dma_mask(dev);
+	if (!dma_region_size)
+		dma_region_size = dev->coherent_dma_mask;
+	if (dma_region_size != DMA_BIT_MASK(64))
+		dma_region_size += 1;
+
+	arch_setup_dma_ops(dev, 0, dma_region_size, iommu,
 			   attr == DEV_DMA_COHERENT);
 }
 
