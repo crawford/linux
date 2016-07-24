@@ -867,9 +867,10 @@ static bool __queue_cons_before(struct arm_smmu_queue *q, u32 until)
 	return Q_IDX(q, q->cons) >= Q_IDX(q, until);
 }
 
-static int queue_poll_cons(struct arm_smmu_queue *q, u32 until, bool wfe)
+static int queue_poll_cons(struct arm_smmu_queue *q, u32 until, bool wfe,
+			   u32 poll_timeout_us)
 {
-	ktime_t timeout = ktime_add_us(ktime_get(), q->poll_timeout_us);
+	ktime_t timeout = ktime_add_us(ktime_get(), poll_timeout_us);
 
 	while (queue_sync_cons(q), __queue_cons_before(q, until)) {
 		if (ktime_compare(ktime_get(), timeout) > 0)
@@ -1040,7 +1041,8 @@ static void arm_smmu_cmdq_skip_err(struct arm_smmu_device *smmu)
 }
 
 static void arm_smmu_cmdq_issue_cmd(struct arm_smmu_device *smmu,
-				    struct arm_smmu_cmdq_ent *ent)
+				    struct arm_smmu_cmdq_ent *ent,
+				    u32 timeout_us)
 {
 	u32 until;
 	u64 cmd[CMDQ_ENT_DWORDS];
@@ -1054,23 +1056,27 @@ static void arm_smmu_cmdq_issue_cmd(struct arm_smmu_device *smmu,
 	}
 
 	spin_lock(&smmu->cmdq.lock);
+	if (!timeout_us)
+		timeout_us = q->poll_timeout_us;
+
 	while (until = q->prod + 1, queue_insert_raw(q, cmd) == -ENOSPC) {
 		/*
 		 * Keep the queue locked, otherwise the producer could wrap
 		 * twice and we could see a future consumer pointer that looks
 		 * like it's behind us.
 		 */
-		if (queue_poll_cons(q, until, wfe))
+		if (queue_poll_cons(q, until, wfe, timeout_us))
 			mmu_err_ratelimited(smmu, "CMDQ timeout\n");
 	}
 
-	if (ent->opcode == CMDQ_OP_CMD_SYNC && queue_poll_cons(q, until, wfe)) {
+	if (ent->opcode == CMDQ_OP_CMD_SYNC &&
+			queue_poll_cons(q, until, wfe, timeout_us)) {
 
 		/* Relax the timeout */
 		if (q->poll_timeout_us >= ARM_SMMU_MAX_CMDQ_TIMEOUT_US) {
 			mmu_err_ratelimited(smmu, "CMD_SYNC timeout [%u us] - [MAX]\n",
 					    q->poll_timeout_us);
-		} else {
+		} else if (timeout_us == q->poll_timeout_us) {
 			mmu_info(smmu, "CMD_SYNC timed out [%u us] - relaxing to [%u us]\n",
 				 q->poll_timeout_us, 10 * q->poll_timeout_us);
 			q->poll_timeout_us *= 10;
@@ -1146,9 +1152,9 @@ static void arm_smmu_sync_ste_for_sid(struct arm_smmu_device *smmu, u32 sid)
 		},
 	};
 
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 	cmd.opcode = CMDQ_OP_CMD_SYNC;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 }
 
 static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
@@ -1302,7 +1308,7 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 
 	/* It's likely that we'll want to use the new STE soon */
 	if (!(smmu->options & ARM_SMMU_OPT_SKIP_PREFETCH))
-		arm_smmu_cmdq_issue_cmd(smmu, &prefetch_cmd);
+		arm_smmu_cmdq_issue_cmd(smmu, &prefetch_cmd, 0);
 }
 
 static void arm_smmu_init_bypass_stes(u64 *strtab, unsigned int nent,
@@ -1429,7 +1435,7 @@ static irqreturn_t arm_smmu_priq_thread(int irq, void *dev)
 				},
 			};
 
-			arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+			arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 		}
 	}
 
@@ -1514,19 +1520,20 @@ static irqreturn_t arm_smmu_gerror_handler(int irq, void *dev)
 }
 
 /* IO_PGTABLE API */
-static void __arm_smmu_tlb_sync(struct arm_smmu_device *smmu)
+static void __arm_smmu_tlb_sync(struct arm_smmu_device *smmu, u32 timeout_us)
 {
 	struct arm_smmu_cmdq_ent cmd;
 
 	cmd.opcode = CMDQ_OP_CMD_SYNC;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, timeout_us);
 }
 
 static void arm_smmu_tlb_sync(void *cookie)
 {
 	struct arm_smmu_domain *smmu_domain = cookie;
-	__arm_smmu_tlb_sync(smmu_domain->smmu);
+	__arm_smmu_tlb_sync(smmu_domain->smmu, 0);
 }
+
 
 static void arm_smmu_tlb_inv_context(void *cookie)
 {
@@ -1543,8 +1550,8 @@ static void arm_smmu_tlb_inv_context(void *cookie)
 		cmd.tlbi.vmid	= smmu_domain->s2_cfg.vmid;
 	}
 
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
-	__arm_smmu_tlb_sync(smmu);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
+	__arm_smmu_tlb_sync(smmu, 0);
 }
 
 static void arm_smmu_tlb_inv_range_nosync(unsigned long iova, size_t size,
@@ -1568,7 +1575,7 @@ static void arm_smmu_tlb_inv_range_nosync(unsigned long iova, size_t size,
 	}
 
 	do {
-		arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+		arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 		cmd.tlbi.addr += granule;
 	} while (size -= granule);
 }
@@ -2553,20 +2560,20 @@ static int arm_smmu_device_reset(struct arm_smmu_device *smmu)
 
 	/* Invalidate any cached configuration */
 	cmd.opcode = CMDQ_OP_CFGI_ALL;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 	cmd.opcode = CMDQ_OP_CMD_SYNC;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 
 	/* Invalidate any stale TLB entries */
 	if (smmu->features & ARM_SMMU_FEAT_HYP) {
 		cmd.opcode = CMDQ_OP_TLBI_EL2_ALL;
-		arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+		arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 	}
 
 	cmd.opcode = CMDQ_OP_TLBI_NSNH_ALL;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 	cmd.opcode = CMDQ_OP_CMD_SYNC;
-	arm_smmu_cmdq_issue_cmd(smmu, &cmd);
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 
 	/* Event queue */
 	writeq_relaxed(smmu->evtq.q.q_base, smmu->base + ARM_SMMU_EVTQ_BASE);
