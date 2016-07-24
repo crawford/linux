@@ -37,6 +37,7 @@
 #include <linux/of_platform.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/log2.h>
 
 #include <linux/amba/bus.h>
 
@@ -382,6 +383,12 @@
 #define CMDQ_TLBI_1_VA_MASK		~0xfffUL
 #define CMDQ_TLBI_1_IPA_MASK		0xfffffffff000UL
 
+#define CMDQ_ATC_0_SSID_SHIFT		12
+#define CMDQ_ATC_0_SID_SHIFT		32
+#define CMDQ_ATC_0_GLOBAL		(1UL << 9)
+#define CMDQ_ATC_1_SIZE_SHIFT		0
+#define CMDQ_ATC_1_MASK		~0xfffUL
+
 #define CMDQ_PRI_0_SSID_SHIFT		12
 #define CMDQ_PRI_0_SSID_MASK		0xfffffUL
 #define CMDQ_PRI_0_SID_SHIFT		32
@@ -427,6 +434,7 @@
 /* High-level queue structures */
 #define ARM_SMMU_POLL_TIMEOUT_US	100
 #define ARM_SMMU_MAX_CMDQ_TIMEOUT_US	1000000
+#define ARM_SMMU_MAX_ATS_TIMEOUT_US	90000000
 
 static bool disable_bypass;
 module_param_named(disable_bypass, disable_bypass, bool, S_IRUGO);
@@ -503,6 +511,15 @@ struct arm_smmu_cmdq_ent {
 			bool			leaf;
 			u64			addr;
 		} tlbi;
+
+		#define CMDQ_OP_ATC_INV		0x40
+		struct {
+			u32			sid;
+			u32			ssid;
+			u64			addr;
+			u8			size;
+			bool			global;
+		} atci;
 
 		#define CMDQ_OP_PRI_RESP	0x41
 		struct {
@@ -676,6 +693,7 @@ struct arm_smmu_domain {
 	struct iommu_domain		domain;
 
 	phys_addr_t			msi_addr_mapped;
+	struct list_head		ats_dev_list;
 };
 
 enum arm_smmu_fw_type {
@@ -694,12 +712,14 @@ struct arm_smmu_fw_handle {
 
 /* SMMU private data for each master */
 struct arm_smmu_master_data {
+	struct list_head		list;     /* For domain->ats_dev_list */
 	struct arm_smmu_fw_handle	handle;
 	struct arm_smmu_device		*smmu;
 
 	struct arm_smmu_strtab_ent	ste;
 	u32				*sids;
 	u32				num_sids;
+	u32				ats_qdep;
 };
 
 struct arm_smmu_option_prop {
@@ -961,6 +981,14 @@ static int arm_smmu_cmdq_build_cmd(u64 *cmd, struct arm_smmu_cmdq_ent *ent)
 		/* Fallthrough */
 	case CMDQ_OP_TLBI_S12_VMALL:
 		cmd[0] |= (u64)ent->tlbi.vmid << CMDQ_TLBI_0_VMID_SHIFT;
+		break;
+	case CMDQ_OP_ATC_INV:
+		cmd[0] |= ent->substream_valid ? CMDQ_0_SSV : 0;
+		cmd[0] |= ent->atci.ssid << CMDQ_ATC_0_SSID_SHIFT;
+		cmd[0] |= ent->atci.global ?  CMDQ_ATC_0_GLOBAL : 0;
+		cmd[0] |= (u64)ent->atci.sid << CMDQ_ATC_0_SID_SHIFT;
+		cmd[1] |= ent->atci.size << CMDQ_ATC_1_SIZE_SHIFT;
+		cmd[1] |= ent->atci.addr & CMDQ_ATC_1_MASK;
 		break;
 	case CMDQ_OP_PRI_RESP:
 		cmd[0] |= ent->substream_valid ? CMDQ_0_SSV : 0;
@@ -1531,9 +1559,81 @@ static void __arm_smmu_tlb_sync(struct arm_smmu_device *smmu, u32 timeout_us)
 static void arm_smmu_tlb_sync(void *cookie)
 {
 	struct arm_smmu_domain *smmu_domain = cookie;
-	__arm_smmu_tlb_sync(smmu_domain->smmu, 0);
+	u32 timeout = 0;
+
+	if (!list_empty(&smmu_domain->ats_dev_list))
+		timeout = ARM_SMMU_MAX_ATS_TIMEOUT_US;
+
+	__arm_smmu_tlb_sync(smmu_domain->smmu, timeout);
 }
 
+
+static void arm_smmu_ats_tlb_invalidate(struct arm_smmu_device *smmu,
+					 u32 sid, u32 ssid, u64 addr, u16 size,
+					 bool global, bool ssv)
+{
+	struct arm_smmu_cmdq_ent cmd;
+
+	cmd.opcode = CMDQ_OP_ATC_INV;
+	cmd.atci.sid = sid;
+	cmd.atci.ssid = ssid;
+	cmd.atci.addr = addr;
+	cmd.atci.global = global;
+	cmd.atci.size = size;
+	cmd.substream_valid = ssv;
+	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
+}
+
+static void arm_smmu_device_flush_atc(struct arm_smmu_master_data *master,
+				      unsigned long iova, size_t size,
+				      u32 *active_reqs)
+{
+	struct arm_smmu_device *smmu = master->smmu;
+	int rsize = size >> 12;
+	int i;
+
+	for (i = 0; i < master->num_sids; i++) {
+		/*
+		 * ATS only supports 32 outstanding requests at a time.
+		 * Need to insert a sync to recollect the TAGs.
+		 */
+		if (*active_reqs && ((*active_reqs % 32) == 0)) {
+			__arm_smmu_tlb_sync(smmu, ARM_SMMU_MAX_ATS_TIMEOUT_US);
+			*active_reqs = 0;
+		}
+
+		arm_smmu_ats_tlb_invalidate(smmu, master->sids[i], 0, iova,
+					    ilog2(rsize), false, false);
+
+		/*
+		 * A device may support less outstanding ATS invalidation
+		 * requests than the number of sids.
+		 * Need to make sure that the device can take the next
+		 * invalidation request before issuing one.
+		 */
+		if (i && ((i % master->ats_qdep) == 0)) {
+			__arm_smmu_tlb_sync(smmu, ARM_SMMU_MAX_ATS_TIMEOUT_US);
+			*active_reqs = 0;
+		} else {
+			*active_reqs = *active_reqs + 1;
+		}
+	}
+}
+
+static void arm_smmu_domain_flush_atc(struct arm_smmu_domain *smmu_domain,
+				      unsigned long iova, size_t size,
+				      bool sync_required)
+{
+	struct arm_smmu_master_data *master;
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
+	u32 active_reqs = 0;
+
+	list_for_each_entry(master, &smmu_domain->ats_dev_list, list)
+		arm_smmu_device_flush_atc(master, iova, size, &active_reqs);
+
+	if (sync_required)
+		__arm_smmu_tlb_sync(smmu, ARM_SMMU_MAX_ATS_TIMEOUT_US);
+}
 
 static void arm_smmu_tlb_inv_context(void *cookie)
 {
@@ -1552,6 +1652,8 @@ static void arm_smmu_tlb_inv_context(void *cookie)
 
 	arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 	__arm_smmu_tlb_sync(smmu, 0);
+	if (!list_empty(&smmu_domain->ats_dev_list))
+		arm_smmu_domain_flush_atc(smmu_domain, 0, 52, true);
 }
 
 static void arm_smmu_tlb_inv_range_nosync(unsigned long iova, size_t size,
@@ -1565,6 +1667,7 @@ static void arm_smmu_tlb_inv_range_nosync(unsigned long iova, size_t size,
 			.addr	= iova,
 		},
 	};
+	size_t iosize = size;
 
 	if (smmu_domain->stage == ARM_SMMU_DOMAIN_S1) {
 		cmd.opcode	= CMDQ_OP_TLBI_NH_VA;
@@ -1578,6 +1681,22 @@ static void arm_smmu_tlb_inv_range_nosync(unsigned long iova, size_t size,
 		arm_smmu_cmdq_issue_cmd(smmu, &cmd, 0);
 		cmd.tlbi.addr += granule;
 	} while (size -= granule);
+
+	if (!list_empty(&smmu_domain->ats_dev_list)) {
+		unsigned long ioaddr = iova;
+
+		/*
+		 * The invalidate command needs to complete before
+		 * sending out the ATS invalidate
+		 */
+		__arm_smmu_tlb_sync(smmu, 0);
+
+		do {
+			arm_smmu_domain_flush_atc(smmu_domain, ioaddr,
+						  iosize, false);
+			ioaddr += granule;
+		} while (iosize -= granule);
+	}
 }
 
 static struct iommu_gather_ops arm_smmu_gather_ops = {
@@ -1680,6 +1799,7 @@ static struct iommu_domain *arm_smmu_domain_alloc(unsigned type)
 
 	mutex_init(&smmu_domain->init_mutex);
 	spin_lock_init(&smmu_domain->pgtbl_lock);
+	INIT_LIST_HEAD(&smmu_domain->ats_dev_list);
 	return &smmu_domain->domain;
 }
 
@@ -1884,6 +2004,36 @@ static void arm_smmu_install_ste(struct arm_smmu_master_data *master,
 	}
 }
 
+static void arm_smmu_detach_dev(struct iommu_domain *domain, struct device *dev)
+{
+	struct arm_smmu_master_data *master = dev->archdata.iommu;
+
+	list_del(&master->list);
+}
+
+static bool arm_smmu_ats_supported(struct arm_smmu_device *smmu,
+				   struct device *dev)
+{
+	struct pci_bus *pbus;
+	struct pci_dev *pci_dev = to_pci_dev(dev);
+
+	if (!dev_is_pci(dev))
+		return false;
+
+	if (!(smmu->features & ARM_SMMU_FEAT_ATS))
+		return false;
+
+	if (!acpi_disabled)
+		return iort_dev_find_ats_supported(dev);
+
+	pbus = pci_dev->bus;
+
+	while (!pci_is_root_bus(pbus))
+		pbus = pbus->parent;
+
+	return device_property_read_bool(&pbus->dev, "ats-support");
+}
+
 static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 {
 	int ret = 0;
@@ -1916,6 +2066,32 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 	arm_smmu_install_ste(master, smmu_domain);
 
+	if (arm_smmu_ats_supported(smmu, dev)) {
+		struct pci_dev *pci_dev = to_pci_dev(dev);
+		int pcie_type = pci_pcie_type(pci_dev);
+
+		if (!pci_is_pcie(pci_dev))
+			goto out_unlock;
+
+		if ((pcie_type == PCI_EXP_TYPE_ROOT_PORT) ||
+			(pcie_type == PCI_EXP_TYPE_DOWNSTREAM)) {
+			goto out_unlock;
+		}
+
+		ret = pci_enable_ats(pci_dev, PAGE_SHIFT);
+		if (ret)
+			goto out_unlock;
+
+		master->ats_qdep = pci_ats_queue_depth(pci_dev);
+		/*
+		 * a value of 0 means the device can handle the spec
+		 * defined maximum value of 32.
+		 */
+		if (!master->ats_qdep)
+			master->ats_qdep = 32;
+
+		list_add(&master->list, &smmu_domain->ats_dev_list);
+	}
 out_unlock:
 	mutex_unlock(&smmu_domain->init_mutex);
 	return ret;
@@ -2141,6 +2317,7 @@ static struct iommu_ops arm_smmu_ops = {
 	.domain_alloc		= arm_smmu_domain_alloc,
 	.domain_free		= arm_smmu_domain_free,
 	.attach_dev		= arm_smmu_attach_dev,
+	.detach_dev		= arm_smmu_detach_dev,
 	.map			= arm_smmu_map,
 	.unmap			= arm_smmu_unmap,
 	.map_sg			= default_iommu_map_sg,
