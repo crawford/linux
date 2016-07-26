@@ -490,6 +490,28 @@ iort_dev_find_its_id(struct device *dev, u32 req_id, unsigned int idx,
 }
 
 /**
+ * iort_dev_find_ats_supported() - Find if ATS is supported for PCI RC
+ * @dev: The device.
+ *
+ * Returns: true on supported, false value otherwise
+ */
+bool iort_dev_find_ats_supported(struct device *dev)
+{
+	struct acpi_iort_root_complex *pci_rc;
+	struct acpi_iort_node *node;
+
+	node = iort_find_dev_node(dev);
+	if (!node)
+		return false;
+
+	if (!dev_is_pci(dev))
+		return false;
+
+	pci_rc = (struct acpi_iort_root_complex *)node->node_data;
+	return pci_rc->ats_attribute > 0;
+}
+
+/**
  * iort_get_device_domain() - Find MSI domain related to a device
  * @dev: The device.
  * @req_id: Requester ID for the device.
