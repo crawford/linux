@@ -1740,7 +1740,7 @@ static int arm_smmu_unmap_msi_target(struct arm_smmu_domain *smmu_domain)
 {
 	phys_addr_t addr = smmu_domain->msi_addr_mapped;
 	const struct iommu_ops *ops = smmu_domain->domain.ops;
-	u64 granule = (1ULL << __ffs(ops->pgsize_bitmap));
+	u64 granule = (1ULL << __ffs(smmu_domain->domain.pgsize_bitmap));
 	int ret;
 
 	if (!addr)
