@@ -1255,20 +1255,21 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 
 	if (ste_live || ste->bypass) {
 		struct arm_smmu_bypass_attrs *bpa;
+		u64 bpv;
 
 		val |= disable_bypass ? STRTAB_STE_0_CFG_ABORT
 				      : STRTAB_STE_0_CFG_BYPASS;
 		dst[0] = cpu_to_le64(val);
 
 		bpa = smmu ? &smmu->bypass_attrs : ste->bypass_attrs;
-		val = (u64)bpa->memattr  << STRTAB_STE_1_MEMATTR_SHIFT  |
+		bpv = (u64)bpa->memattr  << STRTAB_STE_1_MEMATTR_SHIFT  |
 		      (u64)bpa->mtcfg    << STRTAB_STE_1_MTCFG_SHIFT    |
 		      (u64)bpa->alloccfg << STRTAB_STE_1_ALLOCCFG_SHIFT |
 		      (u64)bpa->shcfg    << STRTAB_STE_1_SHCFG_SHIFT    |
 		      (u64)bpa->privcfg  << STRTAB_STE_1_PRIVCFG_SHIFT  |
 		      (u64)bpa->instcfg  << STRTAB_STE_1_INSTCFG_SHIFT;
 		dst[1] = ste->bypass ?
-			 cpu_to_le64(val) :
+			 cpu_to_le64(bpv) :
 			 cpu_to_le64(STRTAB_STE_1_SHCFG_INCOMING <<
 				     STRTAB_STE_1_SHCFG_SHIFT);
 
