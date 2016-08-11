@@ -1308,6 +1308,8 @@ static void arm_smmu_write_strtab_ent(struct arm_smmu_device *smmu, u32 sid,
 		if (smmu->features & ARM_SMMU_FEAT_STALLS)
 			dst[1] |= cpu_to_le64(STRTAB_STE_1_S1STALLD);
 
+		val &= ~(STRTAB_STE_0_S1CTXPTR_MASK <<
+			 STRTAB_STE_0_S1CTXPTR_SHIFT);
 		val |= (s1ctxptr & STRTAB_STE_0_S1CTXPTR_MASK
 		        << STRTAB_STE_0_S1CTXPTR_SHIFT) |
 			STRTAB_STE_0_CFG_S1_TRANS;
