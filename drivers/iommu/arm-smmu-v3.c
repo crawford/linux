@@ -2023,6 +2023,11 @@ static bool arm_smmu_ats_supported(struct arm_smmu_device *smmu,
 	if (!dev_is_pci(dev))
 		return false;
 
+#ifdef CONFIG_PCI_ATS
+	if (!pci_dev->ats_cap)
+		return false;
+#endif
+
 	if (!(smmu->features & ARM_SMMU_FEAT_ATS))
 		return false;
 
